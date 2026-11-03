@@ -8,14 +8,20 @@ FUNCIONES DISPONIBLES
 - Salidas MP4, MP3, WAV, FLAC, PNG y JPG; PNG/JPG toman el primer fotograma.
 - Descarga autenticada de resultados e historial persistente.
 - Transcripción local multilingüe de audio/vídeo a TXT, SRT, VTT y JSON.
-- Extracción de texto seleccionable de PDF e importación de TXT/MD/subtítulos.
+- Extracción de texto de PDF, OCR local de PDF escaneados e imágenes, e importación de TXT/MD/subtítulos.
 - Biblioteca de notas con búsqueda, edición, exportación y tarjetas de repaso.
+- Integración con el bot existente de CosmoDownloader: comandos privados,
+  avisos de trabajos y envío de resultados de hasta 100 MB.
+- Gestión privada de cookies por servicio y conexión de biblioteca Udemy
+  condicionada a una sesión autenticada que responda correctamente.
 
 La adaptación web ya incluye descargas, conversión, transcripción y estudio.
-Los plugins de cursos, Telegram, chat y el resto de herramientas Tauri todavía
-no están conectados a esta interfaz. La disponibilidad de cada plataforma de
+La integración Telegram de esta edición usa el bot existente, sin iniciar
+otro poller ni entrar a una cuenta personal MTProto. El chat y otras
+herramientas exclusivas de Tauri todavía no están conectados a esta interfaz. La disponibilidad de cada plataforma de
 vídeo depende de la CLI, sus extractores y las restricciones del servicio.
-La web no incorpora todavía importación de cookies ni login en plataformas.
+La pestaña Servicios permite importar cookies Netscape. Udemy no se declara
+conectado hasta que una consulta real de la biblioteca devuelve los cursos.
 
 INSTALACIÓN
 Requisitos: Linux, Python 3.12+, systemd de usuario, Rust 1.97.0 para compilar,
@@ -76,9 +82,15 @@ La pestaña Transcribir genera transcript.txt, transcript.srt, transcript.vtt y
 transcript.json. El resultado depende del modelo, el idioma y la calidad de
 la grabación; una transcripción no garantiza fidelidad literal.
 
-En Estudiar se puede subir PDF, TXT, MD, SRT o VTT. pdftotext extrae el texto
-de PDF; no se aplica OCR ni se abren PDF protegidos por contraseña. Los PDF
-escaneados pueden producir texto vacío. «Guardar en notas» copia un resultado
+En Estudiar se puede subir PDF, PNG/JPG/WEBP, TXT, MD, SRT o VTT. El modo
+OCR automático conserva el texto de cada página y reconoce las páginas sin
+texto suficiente con Tesseract. Forzar OCR reconoce todas las páginas; Solo
+texto existente no aplica OCR. Se admiten hasta 50 páginas por trabajo.
+Para instalar los motores y los idiomas usados en Ubuntu:
+  sudo apt-get install tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng poppler-utils ffmpeg
+El OCR permite español, inglés o ambos. No abre PDF cifrados con contraseña.
+Genera document.txt y ocr-info.json con las páginas reconocidas; los archivos
+intermedios se borran al terminar. El reconocimiento puede contener errores. «Guardar en notas» copia un resultado
 de texto de hasta 2 MB a la biblioteca, por lo que eliminar el trabajo original
 no elimina la nota. La biblioteca usa SQLite en <datos>/study.sqlite3 (0600),
 con límite de 1000 notas, 64 MB de texto total y 5000 tarjetas.
@@ -144,13 +156,74 @@ CONTROLES Y LÍMITES
 - El navegador recupera archivos con fetch autenticado y un blob: archivos
   grandes pueden consumir bastante memoria en el equipo cliente.
 
+SERVICIOS, COOKIES Y UDEMY
+Los archivos reales de cookies se guardan en ~/.config/omniget-web/services,
+con permisos 0600. Cada archivo se filtra por servicio y frontera exacta de
+dominio, conserva HttpOnly y cookies de sesión, y descarta las caducadas. Las
+cookies no se devuelven a la interfaz ni se incluyen en exportaciones de notas.
+El trabajador genera el jar de ejecución en <datos>/runtime/cookies/cookies.txt;
+yt-dlp aplica el ámbito de dominio al usar las sesiones.
+
+Se pueden reutilizar los archivos de cookies de Cosmo sin modificar el original.
+Importar cookies confirma el almacenamiento, no que la plataforma las acepte.
+La biblioteca Udemy usa solo HTTPS en www.udemy.com y rechaza redirecciones
+fuera de ese origen. El botón Verificar y ver mis cursos debe cargar resultados
+reales antes de permitir trabajos de lecciones. La página de acceso puede
+pedir Cloudflare o un código; resolverlo en Udemy y exportar/importar la sesión
+si el servidor no puede entrar. Guardar email/contraseña no equivale a verificar
+la cuenta. No se muestran esos secretos en el navegador.
+
+Las credenciales opcionales de Udemy se conservan fuera de Git, en
+~/.config/omniget-web/udemy-credentials.json (0600). La integración no automatiza
+la resolución de CAPTCHA ni presupone que una cookie de invitado sea sesión
+válida. Las lecciones marcadas como DRM quedan deshabilitadas; no se evita DRM.
+Las descargas de lecciones usan el yt-dlp verificado del directorio runtime,
+sin argumentos libres, y requieren haber consultado la biblioteca con éxito.
+
+TELEGRAM Y COSMODOWNLOADER
+Instalación en esta máquina, con Cosmo ubicado en /opt/Downloader-Bot:
+  python3 server/install-cosmo.py
+El script lee la configuración privada existente, verifica la identidad del
+bot, copia sesiones multimedia filtradas y crea una imagen fina basada en
+la imagen local downloader-bot-robert:private-v2. No modifica el Compose
+original, la base de datos ni los otros servicios de Cosmo. Solo recrea el
+contenedor del bot con un override y conserva la imagen anterior.
+
+Configuración privada de OmniGet: telegram.json y bot-bridge.json bajo
+~/.config/omniget-web (0600). La copia para el contenedor se monta de solo
+lectura desde /opt/Downloader-Bot/private y queda excluida de Git. El canal
+local es un socket Unix autenticado, no un puerto público. Solo permite
+consultar el estado, añadir enlaces y cancelar trabajos: no exporta notas,
+contraseñas ni cookies. El router de Cosmo admite solo ADMIN_ID en chat privado.
+
+Comandos del bot existente:
+  /omniget
+  /omniget_estado
+  /omniget_descargar https://...
+  /omniget_cancelar ID
+Los comandos habituales /start, /help, /settings y /stats siguen disponibles.
+No se ejecuta getUpdates desde OmniGet: el poller de Cosmo sigue siendo el único.
+Las notificaciones no incluyen cookies ni URLs firmadas; los archivos solo se
+envían al chat privado fijo configurado. El botón Enviar a Telegram admite
+hasta 100 MB y transmite por bloques. Para tamaños mayores usar la descarga web.
+La integración no enumera chats ni descarga contenido privado de una cuenta
+personal de Telegram; es una conexión con el bot ya existente.
+
+Arranque manual de Cosmo con la integración:
+  sudo docker compose --project-name downloader-bot -f /opt/Downloader-Bot/docker-compose.yml -f /opt/Downloader-Bot/docker-compose.omniget.yml up -d --no-deps --no-build downloader-bot
+Restaurar la imagen original sin borrar datos:
+  sudo docker compose --project-name downloader-bot -f /opt/Downloader-Bot/docker-compose.yml up -d --no-deps --no-build downloader-bot
+Si se recrea la API local de Telegram y cambia su IP de Docker, ejecutar otra
+vez install-cosmo.py para actualizar y volver a comprobar la conexión privada.
+
 DESARROLLO Y SIGUIENTES ETAPAS
 Comprobar backend: python3 -m unittest discover -s server -v
 Comprobar interfaz: pnpm lint:ui server/static/index.html
 Antes de push: pnpm test y node scripts/e2e_verify.mjs (AGENTS.md).
 
 Los siguientes módulos requieren adaptaciones propias, no solo activar un
-interruptor: cursos con sus sesiones, Telegram con su autenticación y las otras herramientas de escritorio.
+interruptor: las funciones completas del plugin de cursos, una cuenta personal
+MTProto de Telegram y las otras herramientas de escritorio.
 Las funciones que requieren micrófono, cámara o el navegador del usuario
 necesitarán decidir qué dispositivo las ejecuta. Esta versión no afirma que
 esas funciones estén disponibles todavía. Los hallazgos de seguridad del

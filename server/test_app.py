@@ -273,6 +273,13 @@ class WebTests(unittest.TestCase):
                               ("notes", {"title": "", "body": "x"}), ("notes", {"title": "x", "body": "x", "id": {}})):
             self.assertEqual(self.request("POST", "/api/study/" + path, json.dumps(payload))[0], 400)
 
+    def test_image_document_requires_ocr_enabled(self):
+        _, body, _ = self.request("POST", "/api/uploads?name=scanned.png", b"image fixture")
+        upload = json.loads(body)
+        status, body, _ = self.request("POST", "/api/jobs", json.dumps({"kind": "document", "upload_id": upload["upload_id"], "ocr": "off"}))
+        self.assertEqual(status, 400)
+        self.assertIn("necesita OCR", json.loads(body)["error"])
+
 
 class StudyTests(unittest.TestCase):
     def test_persistence_search_and_review_schedule(self):

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
   <script src="./study.js" defer></script>
+  <script src="./services.js" defer></script>
 </head>
 <body>
   <main>
@@ -52,6 +53,7 @@
           <button type="button" id="tab-convert" aria-pressed="false">Convertir</button>
           <button type="button" id="tab-transcribe" aria-pressed="false">Transcribir</button>
           <button type="button" id="tab-study" aria-pressed="false">Estudiar</button>
+          <button type="button" id="tab-services" aria-pressed="false">Servicios</button>
         </nav>
         <div class="account-actions"><button type="button" class="quiet" id="change-password">Contraseña</button><button type="button" class="quiet" id="logout">Salir</button></div>
       </div>
@@ -98,9 +100,10 @@
       <section class="panel" id="study-panel" hidden>
         <div class="panel-heading"><h2>Tu espacio de estudio</h2><button type="button" id="export-study" class="secondary">Exportar biblioteca</button></div>
         <form id="document">
-          <label for="document-file">Importa un PDF, texto o subtítulos</label>
-          <div class="row"><input id="document-file" type="file" accept=".pdf,.txt,.md,.srt,.vtt" required><button id="document-submit">Extraer texto</button></div>
-          <p class="hint">Los PDF deben contener texto seleccionable. Cuando termine la extracción, pulsa «Guardar en notas» en el resultado.</p>
+          <label for="document-file">Importa un PDF, imagen, texto o subtítulos</label>
+          <div class="row"><input id="document-file" type="file" accept=".pdf,.txt,.md,.srt,.vtt,.png,.jpg,.jpeg,.webp" required><button id="document-submit">Extraer texto</button></div>
+          <div class="options"><div><label for="ocr-mode">Lectura del documento</label><select id="ocr-mode"><option value="auto">OCR automático</option><option value="force">Forzar OCR</option><option value="off">Solo texto existente</option></select></div><div><label for="ocr-language">Idioma del OCR</label><select id="ocr-language"><option value="spa+eng">Español e inglés</option><option value="spa">Español</option><option value="eng">Inglés</option></select></div></div>
+          <p class="hint">El OCR reconoce texto en imágenes y páginas escaneadas. Hasta 50 páginas por PDF. Al terminar, pulsa «Guardar en notas».</p>
         </form>
         <div class="study-layout">
           <aside class="note-library" aria-label="Biblioteca de notas">
@@ -129,6 +132,32 @@
             <button type="button" id="show-answer" class="secondary">Mostrar respuesta</button>
             <div id="review-ratings" class="editor-actions" hidden><button type="button" id="review-again" class="secondary">Repetir</button><button type="button" id="review-good">Bien</button><button type="button" id="review-easy" class="secondary">Fácil</button><button type="button" id="delete-card" class="secondary">Eliminar tarjeta</button></div>
           </article>
+        </section>
+      </section>
+      <section class="panel" id="services-panel" hidden>
+        <h2>Conecta tus servicios</h2>
+        <p>Las sesiones se guardan de forma privada en el servidor. Nunca se muestran ni se incluyen en las notas o exportaciones.</p>
+        <h3>Sesiones de multimedia</h3><div id="service-status" class="service-status"></div>
+        <form id="cookie-form">
+          <div class="options"><div><label for="cookie-service">Servicio</label><select id="cookie-service"><option value="udemy.com">Udemy</option><option value="youtube.com">YouTube</option><option value="instagram.com">Instagram</option><option value="facebook.com">Facebook</option></select></div></div>
+          <label for="cookie-file" class="spaced-label">Archivo de cookies Netscape (.txt)</label><div class="row"><input type="file" id="cookie-file" accept=".txt" required><button id="import-cookies">Guardar sesión</button></div>
+          <p class="hint">Exporta solo las cookies del servicio desde un navegador con sesión iniciada. Se descartan otros dominios y cookies caducadas. El servidor no lee tu perfil del navegador.</p>
+        </form>
+        <section class="service-section">
+          <h3>Udemy</h3><p id="udemy-status" class="hint"></p>
+          <div class="editor-actions"><a class="secondary service-link" href="https://www.udemy.com/join/login-popup/" target="_blank" rel="noopener noreferrer">Iniciar sesión en Udemy</a><button type="button" id="verify-udemy">Verificar y ver mis cursos</button></div>
+          <p class="hint">Si Udemy pide un código o verificación, complétalo en su web e importa la sesión aquí. El acceso se confirma cuando cargan tus cursos.</p>
+          <p id="udemy-result" role="status" class="hint"></p>
+          <div id="udemy-library" hidden>
+            <label for="udemy-course">Tus cursos</label><div class="row"><select id="udemy-course"></select><button type="button" id="udemy-lectures-button">Ver lecciones</button></div>
+            <div class="editor-actions"><button type="button" id="udemy-previous" class="secondary">Cursos anteriores</button><button type="button" id="udemy-next" class="secondary">Más cursos</button></div>
+            <div id="udemy-lectures" class="lecture-list"></div><button type="button" id="udemy-more-lectures" class="secondary" hidden>Más lecciones</button>
+          </div>
+        </section>
+        <section class="service-section">
+          <h3>Telegram</h3><p id="telegram-status" class="hint"></p>
+          <button type="button" id="test-telegram" class="secondary">Enviar mensaje de prueba</button>
+          <p class="hint">Usa /omniget, /omniget_estado, /omniget_descargar URL y /omniget_cancelar ID en tu chat privado con el bot. Los comandos de CosmoDownloader siguen disponibles.</p>
         </section>
       </section>
     </div>

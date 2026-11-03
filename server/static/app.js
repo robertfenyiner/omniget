@@ -1,6 +1,7 @@
 const el = (id) => document.getElementById(id);
 const states = {queued:"En cola", running:"Procesando", completed:"Completado", failed:"No completado", cancelled:"Cancelado"};
-const sections = ["download", "convert", "transcribe", "study"];
+const sections = ["download", "convert", "transcribe", "study", "services"];
+let telegramEnabled = false;
 const phases = {preparing:"Preparando audio", transcribing:"Transcribiendo", extracting:"Extrayendo texto", converting:"Convirtiendo", downloading:"Descargando"};
 let authenticated = false;
 let mustChange = false;
@@ -93,6 +94,12 @@ function renderJob(job) {
     for (const file of job.files) {
       const size = file.size < 1048576 ? `${Math.ceil(file.size / 1024)} KB` : `${(file.size / 1048576).toFixed(1)} MB`;
       files.append(actionButton(`${file.name} · ${size}`, () => saveFile(job, file), "file"));
+      if (telegramEnabled && file.size <= 100 * 1024 * 1024) {
+        files.append(actionButton("Enviar a Telegram", async () => {
+          await api("/api/telegram/send", {method:"POST", body:JSON.stringify({job_id:job.id, name:file.name})});
+          el("message").textContent = "Archivo entregado al bot de Telegram.";
+        }));
+      }
       if (/\.(txt|md|srt|vtt)$/i.test(file.name) && file.size <= 2 * 1024 * 1024) {
         const saveNote = actionButton("Guardar en notas", async () => {
           const note = await (await api("/api/study/import", {method:"POST", body:JSON.stringify({job_id:job.id, name:file.name})})).json();
@@ -138,6 +145,7 @@ async function loadWorkspace() {
   el("transcribe-submit").disabled = !capabilities.transcription || !installed.length;
   if (el("transcribe-submit").disabled) el("transcription-hint").textContent = "El motor o el modelo de transcripción aún no están instalados en este servidor.";
   await loadStudy();
+  await loadServices();
   await refresh();
 }
 
@@ -266,7 +274,7 @@ el("transcribe").onsubmit = async (event) => {
 el("document").onsubmit = async (event) => {
   event.preventDefault();
   try {
-    await uploadToolJob(el("document-file").files[0], {kind:"document"}, el("document-submit"));
+    await uploadToolJob(el("document-file").files[0], {kind:"document", ocr:el("ocr-mode").value, ocr_language:el("ocr-language").value}, el("document-submit"));
     el("document-file").value = "";
   } catch (error) { el("message").textContent = error.message; }
 };

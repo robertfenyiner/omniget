@@ -11,6 +11,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,12 +20,15 @@ import uuid
 
 from auth import AuthStore, AuthError
 from study import StudyStore, TEXT_LIMIT
+from service_sessions import ServiceSessions
+from telegram_bot import TelegramBot
+from bot_bridge import start_bridge
 
 STATIC = Path(__file__).with_name("static")
 DEFAULT_HOSTS = (
     "youtube.com", "youtu.be", "vimeo.com", "soundcloud.com", "bilibili.com",
     "b23.tv", "instagram.com", "tiktok.com", "x.com", "twitter.com",
-    "reddit.com", "twitch.tv", "pinterest.com", "raw.githubusercontent.com",
+    "reddit.com", "twitch.tv", "pinterest.com", "raw.githubusercontent.com", "facebook.com", "udemy.com",
 )
 PROFILES = {
     "mp4": ["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart"],
@@ -76,9 +80,12 @@ class DownloadQueue:
         self.lock = threading.RLock()
         self.pending = queue.Queue(maxsize=20)
         self.jobs = {}
+        self.sessions = None
+        self.telegram = None
         self.processes = {}
         self.ffmpeg = shutil.which("ffmpeg")
         self.pdftotext = shutil.which("pdftotext")
+        self.tesseract = shutil.which("tesseract")
         self.whisper = os.environ.get("OMNIGET_WHISPER_CLI") or shutil.which("whisper-cli")
         self.models_dir = Path(os.environ.get("OMNIGET_WHISPER_MODELS", str(self.root / "models/whisper")))
         index = self.root / "jobs.json"
@@ -100,9 +107,25 @@ class DownloadQueue:
             temporary.replace(self.root / "jobs.json")
 
     def enqueue(self, payload):
+        if isinstance(payload, dict) and payload.get("kind") == "udemy":
+            if set(payload) - {"kind", "url", "quality"}:
+                raise ValueError("Solicitud Udemy no válida.")
+            url = validate_url(payload.get("url"), ("udemy.com",))
+            parsed = urlsplit(url)
+            if parsed.hostname != "www.udemy.com" or not re.fullmatch(r"/course/[A-Za-z0-9_-]+/learn/lecture/[0-9]+/?", parsed.path):
+                raise ValueError("Usa un enlace de lección Udemy.")
+            quality = payload.get("quality", 720)
+            if type(quality) is not int or quality not in (360, 480, 720, 1080, 1440, 2160):
+                raise ValueError("Calidad Udemy no válida.")
+            if not self.sessions or not self.sessions.last_udemy_check:
+                raise ValueError("Primero conecta y verifica tu biblioteca de Udemy.")
+            tool = self.root / "runtime/bin/yt-dlp.pyz"
+            if not tool.is_file():
+                raise ValueError("El motor yt-dlp no está instalado en el directorio del servidor.")
+            return self.add_job(dict(kind="udemy", url=url, quality=quality, title="Lección Udemy"))
         if isinstance(payload, dict) and payload.get("kind") in ("transcribe", "document"):
             kind = payload["kind"]
-            allowed = {"kind", "upload_id", "model", "language"} if kind == "transcribe" else {"kind", "upload_id"}
+            allowed = {"kind", "upload_id", "model", "language"} if kind == "transcribe" else {"kind", "upload_id", "ocr", "ocr_language"}
             if set(payload) - allowed:
                 raise ValueError("Solicitud de herramienta no válida.")
             upload = self.upload_path(payload.get("upload_id", ""))
@@ -114,10 +137,17 @@ class DownloadQueue:
                 if not self.whisper or not self.ffmpeg or not (self.models_dir / f"ggml-{model}.bin").is_file():
                     raise ValueError("El motor o el modelo de transcripción no están instalados.")
                 details.update(model=model, language=language)
-            elif upload.suffix.lower() not in TEXT_EXTENSIONS | {".pdf"}:
-                raise ValueError("Usa un PDF, TXT, Markdown, SRT o VTT.")
+            elif upload.suffix.lower() not in TEXT_EXTENSIONS | {".pdf", ".png", ".jpg", ".jpeg", ".webp"}:
+                raise ValueError("Usa un PDF, imagen, TXT, Markdown, SRT o VTT.")
             elif upload.suffix.lower() == ".pdf" and not self.pdftotext:
                 raise ValueError("Falta pdftotext para extraer el PDF.")
+            if kind == "document":
+                mode, language = payload.get("ocr", "auto"), payload.get("ocr_language", "spa+eng")
+                if mode not in ("auto", "force", "off") or language not in ("spa", "eng", "spa+eng"):
+                    raise ValueError("El modo o idioma de OCR no es válido.")
+                if upload.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and mode == "off":
+                    raise ValueError("Una imagen necesita OCR. Selecciona Automático o Forzar OCR.")
+                details.update(ocr=mode, ocr_language=language)
             return self.add_job(details)
         if isinstance(payload, dict) and payload.get("kind") == "convert":
             if (set(payload) - {"kind", "upload_id", "profile"}
@@ -181,8 +211,10 @@ class DownloadQueue:
         if original.get("state") not in ("failed", "cancelled"):
             raise ValueError("Este trabajo no se puede reintentar.")
         if original.get("kind") in ("convert", "transcribe", "document"):
-            fields = ("kind", "upload_id", "profile", "model", "language")
+            fields = ("kind", "upload_id", "profile", "model", "language", "ocr", "ocr_language")
             return self.enqueue({key: original[key] for key in fields if key in original})
+        if original.get("kind") == "udemy":
+            return self.enqueue({key: original[key] for key in ("kind", "url", "quality")})
         return self.enqueue({key: original[key] for key in ("url", "quality", "audio_only")})
 
     def delete(self, job_id):
@@ -246,6 +278,8 @@ class DownloadQueue:
         env["OMNIGET_DATA_DIR"] = str(self.root / "runtime")
         try:
             output.mkdir(parents=True, mode=0o700)
+            if self.sessions:
+                self.sessions.prepare_runtime()
             commands = []
             kind = job.get("kind", "download")
             if kind == "transcribe":
@@ -258,8 +292,10 @@ class DownloadQueue:
                     "-l", job["language"], "-otxt", "-osrt", "-ovtt", "-oj", "-of", str(output / "transcript")]))
             elif kind == "document":
                 source = self.upload_path(job["upload_id"])
-                if source.suffix.lower() == ".pdf":
-                    commands.append(("extracting", [self.pdftotext, "-enc", "UTF-8", "-nopgbrk", "-layout", str(source), str(output / "document.txt")]))
+                if source.suffix.lower() in (".pdf", ".png", ".jpg", ".jpeg", ".webp"):
+                    commands.append(("extracting", [sys.executable, str(Path(__file__).with_name("ocr.py")),
+                        "--input", str(source), "--output", str(output), "--mode", job.get("ocr", "auto"),
+                        "--language", job.get("ocr_language", "spa+eng")]))
                 else:
                     if source.stat().st_size > TEXT_LIMIT:
                         raise ValueError("El documento de texto supera el límite de 2 MB.")
@@ -271,6 +307,12 @@ class DownloadQueue:
                            str(self.upload_path(job["upload_id"])), "-map_metadata", "-1",
                            *PROFILES[job["profile"]], str(output / ("converted." + job["profile"]))]
                 commands.append(("converting", command))
+            elif kind == "udemy":
+                command = [sys.executable, str(self.root / "runtime/bin/yt-dlp.pyz"), "--ignore-config",
+                    "--cookies", str(self.sessions.cookies / "udemy.com.txt"), "--no-playlist", "--restrict-filenames",
+                    "--no-progress", "-f", f"bestvideo[height<={job['quality']}]+bestaudio/best[height<={job['quality']}]/best",
+                    "-o", str(output / "%(title).160B [%(id)s].%(ext)s"), job["url"]]
+                commands.append(("downloading", command))
             else:
                 command = [self.cli, "download", job["url"], "-q", str(job["quality"]), "-o", str(output)]
                 if job["audio_only"]:
@@ -297,6 +339,11 @@ class DownloadQueue:
             with self.lock:
                 self.processes.pop(job_id, None)
             self.save()
+            if self.telegram:
+                try:
+                    self.telegram.notify_job(job)
+                except ValueError:
+                    pass
 
     def run_command(self, job, command, log, env, deadline):
         process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
@@ -372,11 +419,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/capabilities":
                 return self.respond(200, {"conversion": bool(self.server.downloads.ffmpeg),
                                          "profiles": list(PROFILES), "upload_limit": UPLOAD_LIMIT,
-                                         "study": True, "pdf": bool(self.server.downloads.pdftotext),
+                                         "study": True, "pdf": bool(self.server.downloads.pdftotext), "ocr": bool(self.server.downloads.tesseract),
                                          "transcription": bool(self.server.downloads.whisper and self.server.downloads.ffmpeg),
                                          "models": [{"id": model, "installed": (self.server.downloads.models_dir / f"ggml-{model}.bin").is_file()} for model in WHISPER_MODELS],
                                          "languages": LANGUAGES,
                                          "allowed_hosts": self.server.downloads.allowed_hosts})
+            if path in ("/api/services/status", "/api/telegram/status"):
+                try:
+                    if path == "/api/telegram/status":
+                        return self.respond(200, self.server.telegram.status())
+                    credentials = self.server.auth.directory / "udemy-credentials.json"
+                    email = json.loads(credentials.read_text()).get("email", "") if credentials.exists() else ""
+                    return self.respond(200, {"services": self.server.sessions.status(),
+                        "udemy": {"credentials_saved": credentials.exists(), "email": email,
+                                  "verified_at": self.server.sessions.last_udemy_check}})
+                except ValueError:
+                    return self.respond(400, {"error": "No se pudo leer la configuración privada de servicios."})
             if path.startswith("/api/study/"):
                 try:
                     return self.study_get(path)
@@ -399,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, OSError):
                     return self.respond(404, {"error": "Archivo no disponible."})
             return self.respond(404, {"error": "Ruta no disponible."})
-        names = {"/": "index.html", "/app.js": "app.js", "/study.js": "study.js", "/style.css": "style.css"}
+        names = {"/": "index.html", "/app.js": "app.js", "/study.js": "study.js", "/services.js": "services.js", "/style.css": "style.css"}
         if path not in names:
             return self.respond(404, {"error": "Ruta no disponible."})
         file = STATIC / names[path]
@@ -521,9 +579,29 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/uploads":
             return self.upload()
         try:
-            payload = self.read_json(TEXT_LIMIT + 8192 if path.startswith("/api/study/") else 8192)
+            payload = self.read_json(TEXT_LIMIT + 8192 if path.startswith(("/api/study/", "/api/services/")) else 8192)
             if path.startswith("/api/study/"):
                 return self.study_post(path, payload)
+            if not isinstance(payload, dict):
+                raise ValueError("Solicitud no válida.")
+            if path == "/api/services/cookies":
+                return self.respond(200, self.server.sessions.import_text(payload.get("service"), payload.get("content")))
+            if path == "/api/services/remove":
+                self.server.sessions.remove(payload.get("service"))
+                return self.respond(200, {"ok": True})
+            if path == "/api/udemy/courses":
+                return self.respond(200, self.server.sessions.udemy_courses(payload.get("page", 1)))
+            if path == "/api/udemy/curriculum":
+                return self.respond(200, self.server.sessions.udemy_curriculum(payload.get("course_id"), payload.get("page", 1)))
+            if path == "/api/telegram/test":
+                self.server.telegram.status(verify=True)
+                message = self.server.telegram.send_text("OmniGet está conectado a tu bot. Prueba /omniget o /omniget_estado para acceder a la cola.")
+                return self.respond(200, {"sent": True, "message_id": message["message_id"]})
+            if path == "/api/telegram/send":
+                job_id, name = payload.get("job_id"), payload.get("name")
+                if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id) or not isinstance(name, str):
+                    raise ValueError("Archivo no válido.")
+                return self.respond(200, self.server.telegram.send_file(self.server.downloads.file_path(job_id, name)))
             if path == "/api/jobs":
                 return self.respond(202, self.server.downloads.enqueue(payload))
             match = re.fullmatch(r"/api/jobs/([a-f0-9]{32})/(cancel|retry|delete)", path)
@@ -560,6 +638,11 @@ def main():
     with Server((bind, port), Handler) as server:
         server.auth = auth
         server.study = StudyStore(downloads.root)
+        server.sessions = ServiceSessions(auth.directory / "services", downloads.root / "runtime")
+        server.telegram = TelegramBot(auth.directory / "telegram.json")
+        downloads.sessions = server.sessions
+        downloads.telegram = server.telegram
+        bridge = start_bridge(auth.directory / "bot-bridge.json", downloads)
         server.secure_cookies = os.environ.get("OMNIGET_SECURE_COOKIES") == "1"
         server.downloads = downloads
         print(f"OmniGet web: http://{bind}:{port}", flush=True)

@@ -451,3 +451,38 @@ h3 {
     align-items: flex-start;
   }
 }
+.service-section {
+  margin-top: 30px;
+  padding-top: 24px;
+  border-top: 1px solid #354539;
+}
+.service-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid #354539;
+  padding: 12px 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.service-row span {
+  min-width: 0;
+}
+.service-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 14px;
+  min-height: 36px;
+  border-radius: 9px;
+  font-size: 13px;
+  text-decoration: none;
+}
+.lecture-list {
+  margin-top: 20px;
+}
+@media(max-width:600px) {
+  .service-row {
+    flex-wrap: wrap;
+  }
+}
