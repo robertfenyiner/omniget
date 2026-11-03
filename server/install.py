@@ -4,10 +4,11 @@ import argparse
 import ipaddress
 import os
 from pathlib import Path
-import secrets
 import shutil
 import subprocess
 import sys
+
+from auth import AuthStore
 
 
 def main():
@@ -36,10 +37,14 @@ def main():
     config.mkdir(parents=True, exist_ok=True, mode=0o700)
     env = config / "environment"
     if not env.exists():
-        env.write_text(f"OMNIGET_WEB_TOKEN={secrets.token_urlsafe(48)}\nOMNIGET_WEB_BIND={args.bind}\nOMNIGET_WEB_PORT=8790\nOMNIGET_CLI={cli}\nPATH={binaries}:/usr/local/bin:/usr/bin:/bin\n")
+        env.write_text(f"OMNIGET_WEB_BIND={args.bind}\nOMNIGET_WEB_PORT=8790\nOMNIGET_CLI={cli}\nPATH={binaries}:/usr/local/bin:/usr/bin:/bin\n")
         env.chmod(0o600)
     else:
         print("Se conserva la configuración existente; --bind solo se aplica en la primera instalación.")
+        # Retire the first version's bearer, including its on-disk copy.
+        clean = "\n".join(line for line in env.read_text().splitlines() if not line.startswith("OMNIGET_WEB_TOKEN=")) + "\n"
+        AuthStore.write_private(env, clean)
+    auth = AuthStore(config)
     units = Path.home() / ".config/systemd/user"
     units.mkdir(parents=True, exist_ok=True)
     unit = units / "omniget-web.service"
@@ -70,7 +75,9 @@ WantedBy=default.target
     subprocess.run(["systemctl", "--user", "enable", "omniget-web.service"], check=True)
     subprocess.run(["systemctl", "--user", "restart", "omniget-web.service"], check=True)
     subprocess.run(["systemctl", "--user", "is-active", "--quiet", "omniget-web.service"], check=True)
-    print(f"Servicio instalado. Configuración y clave privadas: {env}")
+    print(f"Servicio instalado. Configuración privada: {env}")
+    if auth.initial_path.exists():
+        print(f"Contraseña temporal de primer acceso: {auth.initial_path}")
     print(f"Dirección configurada en la primera instalación: http://{args.bind}:8790")
 
 

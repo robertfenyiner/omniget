@@ -154,7 +154,7 @@ button:disabled {
 .quiet {
   background:transparent;
   color:#c1cec2;
-  padding:0;
+  padding:0 8px;
   font-size:12px;
   min-height:28px;
   align-self:start
@@ -274,5 +274,72 @@ footer {
     align-items:start;
     flex-direction:column;
     gap:8px
+  }
+}
+.workspace-heading, .account-actions, .tabs, .job-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.workspace-heading {
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.tabs button, .secondary {
+  background: #26372a;
+  color: #d7edce;
+  border: 1px solid #425448;
+}
+.tabs button[aria-pressed=true] {
+  background: #c3f883;
+  color: #172312;
+}
+.account-actions .quiet {
+  min-height: 36px;
+  align-self: center;
+}
+.job-actions {
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+}
+.secondary {
+  min-height: 36px;
+  padding: 8px 14px;
+  font-size: 12px;
+}
+.password-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 20px;
+}
+.form-submit {
+  margin-top: 20px;
+}
+details {
+  margin-top: 18px;
+  font-size: 12px;
+}
+summary {
+  color: #c1cec2;
+  cursor: pointer;
+  padding: 6px 0;
+}
+input[type=file] {
+  font-size: 13px;
+  white-space: normal;
+}
+#allowed-hosts {
+  overflow-wrap: anywhere;
+}
+@media(max-width:600px) {
+  .password-grid {
+    grid-template-columns: 1fr;
+  }
+  .workspace-heading {
+    flex-wrap: wrap;
+  }
+  .options > div {
+    min-width: 140px;
   }
 }

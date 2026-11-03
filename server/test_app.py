@@ -4,10 +4,12 @@ import socket
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from app import DownloadQueue, Handler, Server, validate_url
+from auth import AuthStore, AuthError
 
 PUBLIC_DNS = [(2, 1, 6, "", ("93.184.216.34", 443))]
 REAL_DNS = socket.getaddrinfo
@@ -24,7 +26,10 @@ class WebTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.downloads = DownloadQueue(self.temp.name, "/bin/true", start_worker=False)
         self.server = Server(("127.0.0.1", 0), Handler)
-        self.server.token = "test-key-" * 8
+        self.server.auth = AuthStore(Path(self.temp.name) / "auth")
+        initial = self.server.auth.initial_path.read_text().strip()
+        limited = self.server.auth.login(initial, "test")
+        self.session = self.server.auth.change(limited, initial, "permanent-test-password", "test")
         self.server.downloads = self.downloads
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -39,7 +44,7 @@ class WebTests(unittest.TestCase):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=3)
         request_headers = {"Content-Type": "application/json"}
         if authorized:
-            request_headers["Authorization"] = "Bearer " + self.server.token
+            request_headers["Cookie"] = "omniget_session=" + self.session
         request_headers.update(headers or {})
         connection.request(method, path, body, request_headers)
         response = connection.getresponse()
@@ -120,6 +125,93 @@ class WebTests(unittest.TestCase):
     def test_large_request_and_invalid_json_are_rejected(self):
         self.assertEqual(self.request("POST", "/api/jobs", "x" * 8193)[0], 413)
         self.assertEqual(self.request("POST", "/api/jobs", "{")[0], 400)
+
+    def test_temporary_password_cannot_access_jobs_and_change_revokes_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            auth = AuthStore(directory)
+            initial = auth.initial_path.read_text().strip()
+            self.server.auth = auth
+            status, _, headers = self.request("POST", "/api/auth/login", json.dumps({"password": initial}), authorized=False)
+            self.assertEqual(status, 200)
+            self.assertIn("HttpOnly", headers["Set-Cookie"])
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            self.assertEqual(self.request("GET", "/api/jobs", headers={"Cookie": cookie})[0], 403)
+            status, _, headers = self.request("POST", "/api/auth/password", json.dumps({"current_password": initial, "new_password": "my-new-password-123"}), headers={"Cookie": cookie})
+            self.assertEqual(status, 200)
+            self.assertFalse(auth.initial_path.exists())
+            self.assertEqual(self.request("GET", "/api/jobs", headers={"Cookie": cookie})[0], 401)
+            new_cookie = headers["Set-Cookie"].split(";", 1)[0]
+            self.assertEqual(self.request("GET", "/api/jobs", headers={"Cookie": new_cookie})[0], 200)
+            auth.logout(new_cookie.split("=", 1)[1])
+            self.assertEqual(self.request("GET", "/api/jobs", headers={"Cookie": new_cookie})[0], 401)
+            self.assertNotIn("my-new-password-123", auth.path.read_text())
+
+    def test_wrong_password_rate_limit_and_cross_origin_post(self):
+        for _ in range(8):
+            with self.assertRaises(AuthError):
+                self.server.auth.login("wrong-password", "attacker")
+        with self.assertRaises(AuthError) as caught:
+            self.server.auth.login("permanent-test-password", "attacker")
+        self.assertEqual(caught.exception.status, 429)
+        self.assertEqual(self.request("POST", "/api/auth/login", "{}", headers={"Origin": "https://untrusted.invalid"})[0], 403)
+
+    @patch("app.socket.getaddrinfo", side_effect=public_dns)
+    def test_cancel_retry_delete_and_deleted_pending_job(self, _dns):
+        job = self.downloads.enqueue({"url": "https://youtu.be/test"})
+        self.downloads.cancel(job["id"])
+        self.assertEqual(self.downloads.jobs[job["id"]]["state"], "cancelled")
+        retried = self.downloads.retry(job["id"])
+        self.assertNotEqual(retried["id"], job["id"])
+        self.downloads.delete(job["id"])
+        self.downloads.run(job["id"])
+        self.assertNotIn(job["id"], self.downloads.jobs)
+
+    def test_upload_conversion_and_input_confinement(self):
+        self.downloads.ffmpeg = "/usr/bin/ffmpeg"
+        status, body, _ = self.request("POST", "/api/uploads?name=demo.wav", b"fake-audio",
+                                       headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual(status, 201)
+        upload = json.loads(body)
+        job = self.downloads.enqueue({"kind": "convert", "upload_id": upload["upload_id"], "profile": "mp3"})
+        self.assertEqual(job["kind"], "convert")
+        for invalid_profile in ([], {}, None, "--exec"):
+            self.assertEqual(self.request("POST", "/api/jobs", json.dumps({"kind": "convert", "upload_id": upload["upload_id"], "profile": invalid_profile}))[0], 400)
+        for source in ("../../etc/passwd", "missing.mp4"):
+            with self.assertRaises(ValueError):
+                self.downloads.enqueue({"kind": "convert", "upload_id": source, "profile": "mp3"})
+        self.assertEqual(self.request("POST", "/api/uploads?name=playlist.m3u8", b"fake")[0], 400)
+        self.assertEqual(self.request("POST", "/api/uploads?name=demo.mp4", b"x",
+                                     headers={"Content-Length": str(1024 ** 3 + 1)})[0], 413)
+
+    def test_password_state_survives_restart_and_sessions_do_not(self):
+        restored = AuthStore(self.server.auth.directory)
+        self.assertTrue(restored.verify("permanent-test-password"))
+        self.assertFalse(restored.record["must_change"])
+        self.assertIsNone(restored.session("omniget_session=" + self.session))
+
+    @patch("app.socket.getaddrinfo", side_effect=public_dns)
+    def test_running_job_cancellation_stops_the_process(self, _dns):
+        script = Path(self.temp.name) / "slow-cancellable-cli"
+        script.write_text("#!/bin/sh\nsleep 30\n")
+        script.chmod(0o700)
+        self.downloads.cli = str(script)
+        job = self.downloads.enqueue({"url": "https://youtu.be/test"})
+        worker = threading.Thread(target=self.downloads.run, args=(job["id"],))
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3
+            while job["id"] not in self.downloads.processes and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertIn(job["id"], self.downloads.processes)
+            self.downloads.cancel(job["id"])
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(self.downloads.jobs[job["id"]]["state"], "cancelled")
+            self.assertNotIn(job["id"], self.downloads.processes)
+        finally:
+            if worker.is_alive():
+                self.downloads.cancel(job["id"])
+                worker.join(timeout=3)
 
 
 if __name__ == "__main__":

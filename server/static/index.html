@@ -1,19 +1,90 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark"><title>OmniGet · Descargas</title>
-  <link rel="stylesheet" href="./style.css"><script src="./app.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>OmniGet · Tu biblioteca</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
 </head>
 <body>
   <main>
-    <header><a class="brand" href="/"><span>OmniGet</span></a><span class="badge">Tu servidor, tus archivos</span></header>
-    <section class="intro"><p class="eyebrow">BIBLIOTECA PERSONAL</p><h1>Guarda lo que<br>quieres conservar.</h1><p>Pega un enlace y deja que tu servidor se ocupe de la descarga.</p></section>
-    <section class="panel" id="access"><h2>Conecta con tu servidor</h2><form id="login"><label for="token">Clave de acceso</label><div class="row"><input id="token" type="password" autocomplete="off" required placeholder="Introduce tu clave privada"><button>Conectar</button></div><p class="hint">La clave se conserva durante esta sesión del navegador.</p></form></section>
-    <section class="panel" id="workspace" hidden><div class="panel-heading"><h2>Nueva descarga</h2><button class="quiet" id="logout" type="button">Desconectar</button></div><form id="download"><label for="url">Enlace del contenido</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required><div class="options"><div><label for="quality">Calidad máxima</label><select id="quality"><option value="360">360p</option><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">2160p</option></select></div><label class="checkbox"><input id="audio" type="checkbox"> Solo audio</label><button id="submit">Añadir a la cola</button></div></form><p class="hint">YouTube, Vimeo, SoundCloud y otras plataformas habilitadas. Descarga contenido propio o con permiso.</p></section>
+    <header>
+      <a class="brand" href="/"><span>OmniGet</span></a>
+      <span class="badge">Tu servidor, tus archivos</span>
+    </header>
+    <section class="intro">
+      <p class="eyebrow">BIBLIOTECA PERSONAL</p>
+      <h1>Guarda lo que<br>quieres conservar.</h1>
+      <p>Descarga, convierte y organiza tus archivos desde un solo lugar.</p>
+    </section>
+    <section class="panel" id="access">
+      <h2>Entra en tu servidor</h2>
+      <form id="login">
+        <label for="password">Contraseña</label>
+        <div class="row">
+          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Tu contraseña">
+          <button>Entrar</button>
+        </div>
+        <p class="hint">Si es tu primera visita, usa la contraseña temporal y elige una nueva al entrar.</p>
+      </form>
+    </section>
+    <section class="panel" id="password-panel" hidden>
+      <div class="panel-heading"><h2 id="password-title">Elige tu contraseña</h2><button class="quiet" id="password-back" type="button">Volver</button></div>
+      <p id="password-hint">Cambia la contraseña temporal antes de continuar.</p>
+      <form id="password-form">
+        <label for="current-password">Contraseña actual o temporal</label>
+        <input id="current-password" type="password" autocomplete="current-password" required>
+        <div class="password-grid">
+          <div><label for="new-password">Nueva contraseña</label><input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></div>
+          <div><label for="confirm-password">Repite la nueva contraseña</label><input id="confirm-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></div>
+        </div>
+        <p class="hint">Usa al menos 12 caracteres. Puedes usar una frase con varias palabras.</p>
+        <button id="save-password" class="form-submit">Guardar contraseña</button>
+      </form>
+    </section>
+    <div id="workspace" hidden>
+      <div class="workspace-heading">
+        <nav aria-label="Herramientas" class="tabs">
+          <button type="button" id="tab-download" aria-pressed="true">Descargar</button>
+          <button type="button" id="tab-convert" aria-pressed="false">Convertir</button>
+        </nav>
+        <div class="account-actions"><button type="button" class="quiet" id="change-password">Contraseña</button><button type="button" class="quiet" id="logout">Salir</button></div>
+      </div>
+      <section class="panel" id="download-panel">
+        <h2>Nueva descarga</h2>
+        <form id="download">
+          <label for="url">Enlace del contenido</label>
+          <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required>
+          <div class="options">
+            <div><label for="quality">Calidad máxima</label><select id="quality"><option value="360">360p</option><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">2160p</option></select></div>
+            <label class="checkbox"><input id="audio" type="checkbox"> Solo audio</label>
+            <button id="submit">Añadir a la cola</button>
+          </div>
+        </form>
+        <p class="hint">Descarga contenido propio o con permiso. Los servicios con inicio de sesión pueden necesitar una integración adicional.</p>
+        <details><summary>Dominios habilitados</summary><p id="allowed-hosts" class="hint"></p></details>
+      </section>
+      <section class="panel" id="convert-panel" hidden>
+        <h2>Convierte tus archivos</h2>
+        <form id="convert">
+          <label for="media-file">Archivo de vídeo, audio o imagen</label>
+          <input id="media-file" type="file" accept=".mp4,.mkv,.webm,.mp3,.wav,.m4a,.flac,.mov,.avi,.ogg,.opus,.jpg,.jpeg,.png,.webp" required>
+          <div class="options">
+            <div><label for="profile">Formato de salida</label><select id="profile"><option value="mp4">Vídeo MP4</option><option value="mp3">Audio MP3</option><option value="wav">Audio WAV</option><option value="flac">Audio FLAC</option><option value="png">Imagen PNG</option><option value="jpg">Imagen JPG</option></select></div>
+            <button id="convert-submit">Subir y convertir</button>
+          </div>
+        </form>
+        <p class="hint" id="conversion-hint">Hasta 1 GB por archivo. MP3, WAV y FLAC requieren audio; PNG y JPG extraen el primer fotograma o convierten una imagen.</p>
+      </section>
+    </div>
     <p id="message" role="status" aria-live="polite"></p>
-    <section id="queue-section" hidden><div class="queue-heading"><h2>Tu cola</h2><span id="count"></span></div><div id="jobs"></div></section>
-    <footer>OmniGet · Edición para servidor <span>Acceso privado · Una descarga a la vez</span></footer>
+    <section id="queue-section" hidden>
+      <div class="queue-heading"><h2>Tu actividad</h2><span id="count"></span></div>
+      <div id="jobs"></div>
+    </section>
+    <footer>OmniGet · Edición para servidor <span>Acceso privado · Un trabajo a la vez</span></footer>
   </main>
 </body>
 </html>
