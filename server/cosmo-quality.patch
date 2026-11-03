@@ -1,0 +1,131 @@
+--- a/services/platforms/youtube_media.py
++++ b/services/platforms/youtube_media.py
+@@ -12,6 +12,7 @@
+     resolve_downloaded_path,
+     run_ytdlp_download,
+ )
++from services.settings import resolve_video_quality_format
+ from utils.download_manager import (
+     DownloadConfig,
+     DownloadMetrics,
+@@ -122,9 +123,9 @@
+     if player_client and player_client.strip():
+         extractor_args.setdefault("youtube", {})["player_client"] = _split_env_list(player_client)
+     else:
+-        # The default web clients are frequently challenged on server IPs.
+-        # Android still exposes progressive formats without requiring cookies.
+-        extractor_args.setdefault("youtube", {})["player_client"] = ["android"]
++        # Embedded exposes adaptive HD streams; Android is a fallback for
++        # videos that cannot be embedded. Android alone may expose only 360p.
++        extractor_args.setdefault("youtube", {})["player_client"] = ["web_embedded", "android"]
+     po_token = os.getenv("YTDLP_YOUTUBE_PO_TOKEN")
+     if po_token and po_token.strip():
+         extractor_args.setdefault("youtube", {})["po_token"] = _split_env_list(po_token)
+@@ -173,6 +174,18 @@
+     if isinstance(video_id, str) and video_id:
+         return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+     return None
++
++
++def get_quality_format(quality: str | None, info: dict) -> str:
++    selector = resolve_video_quality_format(quality)
++    # A vertical 720p video is 720x1280: limit its width, not its height.
++    try:
++        width, height = float(info.get("width") or 0), float(info.get("height") or 0)
++    except (TypeError, ValueError):
++        width = height = 0
++    if 0 < width < height:
++        selector = selector.replace("height<=", "width<=")
++    return selector
+ 
+ 
+ def get_video_stream(yt: dict, max_height: int = 720) -> dict | None:
+@@ -376,6 +389,7 @@
+         os.makedirs(os.path.dirname(out_path) or self._output_dir, exist_ok=True)
+         ydl_opts = build_ytdlp_youtube_options(
+             format=format_selector,
++            format_sort=["res", "fps", "vcodec:h264", "acodec:aac"],
+             outtmpl=out_path,
+         )
+         if merge_output_format:
+--- a/handlers/youtube.py
++++ b/handlers/youtube.py
+@@ -211,6 +211,7 @@
+     chat_id: int,
+     on_progress: Any,
+     on_retry_download: Any,
++    format_selector: str | None = None,
+ ) -> DownloadMetrics | None:
+     async def _ytdlp_fallback(source: str) -> DownloadMetrics | None:
+         return await asyncio.wait_for(
+@@ -218,7 +219,7 @@
+                 lambda: download_with_ytdlp_metrics(
+                     yt["webpage_url"],
+                     name,
+-                    YTDLP_FORMAT_720,
++                    format_selector or YTDLP_FORMAT_720,
+                     source,
+                     max_filesize=MAX_FILE_SIZE - 1,
+                 ),
+@@ -229,6 +230,8 @@
+             timeout=900.0,
+         )
+ 
++    if format_selector is not None:
++        return await _ytdlp_fallback("youtube_video_quality")
+     if not video:
+         return await _ytdlp_fallback("youtube_video_ytdlp_merged")
+     if _is_manifest_stream(video):
+@@ -305,7 +308,11 @@
+             await safe_delete_message(status_message)
+             await message.reply(bm.nothing_found())
+             return
+-        video = await asyncio.to_thread(get_video_stream, yt)
++        quality = user_settings.get("video_quality") or "best"
++        format_selector = youtube_platform.get_quality_format(quality, yt)
++        # Progressive streams can be only 360p while adaptive HD is available.
++        # Let yt-dlp choose and merge streams according to the saved preference.
++        video = None
+ 
+         audio_callback_data = (
+             f"audio:youtube:{yt['id']}" if yt and yt.get("id") else None
+@@ -314,7 +321,7 @@
+         views = safe_int(yt.get("view_count"), None)
+         likes = safe_int(yt.get("like_count"), None)
+ 
+-        name = f"{yt['id']}_youtube_video.mp4"
++        name = f"{yt['id']}_{quality}_youtube_video.mp4"
+         await safe_edit_text(status_message, bm.downloading_video_status())
+         size_hint_raw = (video or {}).get("filesize") or (video or {}).get(
+             "filesize_approx"
+@@ -352,6 +359,7 @@
+                 message.chat.id,
+                 on_progress,
+                 on_retry_download,
++                format_selector=format_selector,
+             )
+ 
+         as_document = user_settings.get("as_document") == "on"
+@@ -380,7 +388,10 @@
+ 
+         _handle_backpressure = make_backpressure_handler(message, business_id)
+ 
+-        cache_key = f"{yt['webpage_url']}#document" if as_document else yt["webpage_url"]
++        cache_key = build_media_cache_key(
++            yt["webpage_url"],
++            variant=f"quality-v2:{quality}:{'document' if as_document else 'video'}",
++        )
+         cache_file_type = "document" if as_document else "video"
+ 
+         sent_message = await run_single_media_flow(
+--- a/tests/test_youtube_media_service.py
++++ b/tests/test_youtube_media_service.py
+@@ -147,7 +147,7 @@
+     options = build_ytdlp_youtube_options(skip_download=True)
+ 
+     assert options["js_runtimes"] == {"deno": {}, "node": {}}
+-    assert options["extractor_args"]["youtube"]["player_client"] == ["android"]
++    assert options["extractor_args"]["youtube"]["player_client"] == ["web_embedded", "android"]
+ 
+ 
+ def test_build_ytdlp_youtube_options_uses_default_cookies_file(monkeypatch, tmp_path):

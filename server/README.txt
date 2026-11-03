@@ -188,7 +188,25 @@ bot, importa sesiones multimedia filtradas solo si aún no existen y crea una im
 la imagen local downloader-bot-robert:private-v2. No modifica el Compose
 original, la base de datos ni los otros servicios de Cosmo. Solo recrea el
 contenedor del bot con un override y conserva la imagen anterior.
-La imagen de esta etapa es downloader-bot-robert:cosmo-tools-v1.
+La imagen de esta etapa es downloader-bot-robert:cosmo-tools-v2.
+El instalador aplica cosmo-quality.patch sobre copias de tres archivos de
+Cosmo, sin modificar su checkout. Si el contexto original cambió, patch falla
+sin aproximaciones (--fuzz=0): revisar la adaptación antes de recrear el bot.
+
+CALIDAD DE YOUTUBE
+Las descargas normales usan video_quality guardado (best, balanced o saver),
+seleccionan y combinan vídeo/audio con yt-dlp y evitan priorizar una versión
+progresiva de 360p sobre un vídeo adaptativo HD. En vídeos verticales los
+límites 480p/720p se aplican al ancho. Best no impone límite de resolución.
+La preferencia H264/AAC se aplica después de resolución y FPS, sin recodificar.
+Los clientes por defecto incluyen web_embedded y Android; la configuración
+explícita YTDLP_YOUTUBE_PLAYER_CLIENT conserva prioridad. La disponibilidad
+de formatos sigue dependiendo de YouTube, la sesión y las restricciones de
+cada vídeo. No se afirma que cualquier vídeo ofrezca HD.
+La clave de caché incluye versión, calidad y modo vídeo/documento. Las copias
+antiguas no se reutilizan en ese flujo y no es necesario vaciar toda la caché.
+El parche se limita a las descargas normales de YouTube; no presenta como
+corregidas las preferencias de otros extractores ni el modo inline heredado.
 
 Configuración privada de OmniGet: telegram.json y bot-bridge.json bajo
 ~/.config/omniget-web (0600). La copia para el contenedor se monta de solo
@@ -254,6 +272,10 @@ Comprobar backend: python3 -m unittest discover -s server -v
 Las pruebas de test_cosmo_router.py requieren aiogram y se ejecutan dentro
 de una imagen de Cosmo aislada, sin red y con configuración ficticia. En el
 host web quedan omitidas de forma explícita, no se cuentan como aprobadas.
+cosmo_quality_tests.py se ejecuta explícitamente dentro de la imagen de Cosmo:
+  python -m unittest discover -s /candidate -p cosmo_quality_tests.py -v
+Verifica clientes, límites verticales, selección adaptativa y separación de
+caché para las tres calidades y ambos modos de entrega.
 Comprobar interfaz: pnpm lint:ui server/static/index.html
 Antes de push: pnpm test y node scripts/e2e_verify.mjs (AGENTS.md).
 

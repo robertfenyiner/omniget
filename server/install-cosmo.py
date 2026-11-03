@@ -20,10 +20,22 @@ def run(arguments, **options):
     return subprocess.run(arguments, check=True, **options)
 
 
+def prepare_quality_patch(project, context):
+    """Apply the reviewed native fix to copies, keeping Cosmo's checkout intact."""
+    paths = ("handlers/youtube.py", "services/platforms/youtube_media.py", "tests/test_youtube_media_service.py")
+    for name in paths:
+        target = context / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(project / name, target)
+    patch = Path(__file__).with_name("cosmo-quality.patch").resolve()
+    run(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(patch)], cwd=context)
+    return "".join(f"COPY --chown=appuser:appgroup {name} /app/{name}\n" for name in paths)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path("/opt/Downloader-Bot"))
-    parser.add_argument("--image", default="downloader-bot-robert:cosmo-tools-v1")
+    parser.add_argument("--image", default="downloader-bot-robert:cosmo-tools-v2")
     args = parser.parse_args()
     project = args.project.resolve()
     os.umask(0o077)
@@ -86,9 +98,10 @@ def main():
         context = Path(context)
         (context / "handlers_init.py").write_text(text)
         shutil.copyfile(Path(__file__).with_name("cosmo_integration.py"), context / "omniget.py")
+        quality_files = prepare_quality_patch(project, context)
         (context / "Dockerfile").write_text("FROM downloader-bot-robert:private-v2\n"
             "COPY --chown=appuser:appgroup omniget.py /app/handlers/omniget.py\n"
-            "COPY --chown=appuser:appgroup handlers_init.py /app/handlers/__init__.py\n")
+            "COPY --chown=appuser:appgroup handlers_init.py /app/handlers/__init__.py\n" + quality_files)
         run(["sudo", "-n", "docker", "build", "--pull=false", "-t", args.image, str(context)])
     uid = subprocess.check_output(["sudo", "-n", "docker", "exec", "downloader-bot", "id", "-u", "appuser"], text=True).strip()
     gid = subprocess.check_output(["sudo", "-n", "docker", "exec", "downloader-bot", "id", "-g", "appuser"], text=True).strip()
