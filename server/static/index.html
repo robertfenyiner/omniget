@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>OmniGet · Descargas</title>
+  <link rel="stylesheet" href="./style.css"><script src="./app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="/"><span>OmniGet</span></a><span class="badge">Tu servidor, tus archivos</span></header>
+    <section class="intro"><p class="eyebrow">BIBLIOTECA PERSONAL</p><h1>Guarda lo que<br>quieres conservar.</h1><p>Pega un enlace y deja que tu servidor se ocupe de la descarga.</p></section>
+    <section class="panel" id="access"><h2>Conecta con tu servidor</h2><form id="login"><label for="token">Clave de acceso</label><div class="row"><input id="token" type="password" autocomplete="off" required placeholder="Introduce tu clave privada"><button>Conectar</button></div><p class="hint">La clave se conserva durante esta sesión del navegador.</p></form></section>
+    <section class="panel" id="workspace" hidden><div class="panel-heading"><h2>Nueva descarga</h2><button class="quiet" id="logout" type="button">Desconectar</button></div><form id="download"><label for="url">Enlace del contenido</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required><div class="options"><div><label for="quality">Calidad máxima</label><select id="quality"><option value="360">360p</option><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">2160p</option></select></div><label class="checkbox"><input id="audio" type="checkbox"> Solo audio</label><button id="submit">Añadir a la cola</button></div></form><p class="hint">YouTube, Vimeo, SoundCloud y otras plataformas habilitadas. Descarga contenido propio o con permiso.</p></section>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section id="queue-section" hidden><div class="queue-heading"><h2>Tu cola</h2><span id="count"></span></div><div id="jobs"></div></section>
+    <footer>OmniGet · Edición para servidor <span>Acceso privado · Una descarga a la vez</span></footer>
+  </main>
+</body>
+</html>
