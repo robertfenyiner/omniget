@@ -7,9 +7,12 @@ FUNCIONES DISPONIBLES
 - Subida de audio, vídeo e imágenes de hasta 1 GB para convertir con FFmpeg.
 - Salidas MP4, MP3, WAV, FLAC, PNG y JPG; PNG/JPG toman el primer fotograma.
 - Descarga autenticada de resultados e historial persistente.
+- Transcripción local multilingüe de audio/vídeo a TXT, SRT, VTT y JSON.
+- Extracción de texto seleccionable de PDF e importación de TXT/MD/subtítulos.
+- Biblioteca de notas con búsqueda, edición, exportación y tarjetas de repaso.
 
-Esta es la primera etapa de la adaptación web. Los plugins de cursos,
-Telegram, estudio, transcripción, chat y el resto de herramientas Tauri todavía
+La adaptación web ya incluye descargas, conversión, transcripción y estudio.
+Los plugins de cursos, Telegram, chat y el resto de herramientas Tauri todavía
 no están conectados a esta interfaz. La disponibilidad de cada plataforma de
 vídeo depende de la CLI, sus extractores y las restricciones del servicio.
 La web no incorpora todavía importación de cookies ni login en plataformas.
@@ -47,6 +50,46 @@ La cookie es HttpOnly y SameSite=Strict. Si se termina TLS en un proxy de
 confianza, OMNIGET_SECURE_COOKIES=1 añade Secure a la cookie. El servicio
 limita los intentos de autenticación y rechaza POST desde otros orígenes.
 La antigua clave bearer ya no es aceptada y el instalador la retira del env.
+
+TRANSCRIPCIÓN Y PDF
+Para instalar las dependencias del sistema (Ubuntu/Debian):
+  sudo apt-get install cmake build-essential poppler-utils
+Para compilar el motor y descargar un modelo multilingüe verificado:
+  python3 server/install-transcription.py
+  systemctl --user restart omniget-web
+El instalador fija whisper.cpp v1.9.5 al commit
+ d1be6fde11ac6e0407606b4e42fe72d34add8037 y comprueba el SHA-256 del modelo
+contra valores fijados de la revisión Hugging Face
+5359861c739e955e79d9a303bcbc70fb988958b1. El modelo base-q5_1 ocupa unos 60 MB.
+Para añadir el modelo small-q5_1 (unos 190 MB):
+  python3 server/install-transcription.py --model small-q5_1
+
+El audio se normaliza con FFmpeg a PCM de 16 kHz mono y whisper.cpp usa dos
+hilos de CPU. No se envía el audio a servicios externos; las descargas de
+código y modelos solo ocurren durante la instalación. El trabajo comparte el
+límite total de 45 minutos entre preparación y transcripción, admite cancelación
+y limpia el WAV intermedio al terminar. OMNIGET_WHISPER_CLI y
+OMNIGET_WHISPER_MODELS permiten configurar rutas diferentes. Los modelos viven
+en <datos>/models/whisper y el motor en ~/.local/bin/whisper-cli.
+
+La pestaña Transcribir genera transcript.txt, transcript.srt, transcript.vtt y
+transcript.json. El resultado depende del modelo, el idioma y la calidad de
+la grabación; una transcripción no garantiza fidelidad literal.
+
+En Estudiar se puede subir PDF, TXT, MD, SRT o VTT. pdftotext extrae el texto
+de PDF; no se aplica OCR ni se abren PDF protegidos por contraseña. Los PDF
+escaneados pueden producir texto vacío. «Guardar en notas» copia un resultado
+de texto de hasta 2 MB a la biblioteca, por lo que eliminar el trabajo original
+no elimina la nota. La biblioteca usa SQLite en <datos>/study.sqlite3 (0600),
+con límite de 1000 notas, 64 MB de texto total y 5000 tarjetas.
+
+Las tarjetas se crean manualmente y pueden vincularse a la nota abierta.
+El repaso usa intervalos simples: Repetir vuelve a programar en diez minutos;
+Bien duplica el intervalo (mínimo dos días) y Fácil lo triplica (mínimo tres),
+con máximo de 365 días. No usa generación de respuestas ni resúmenes con IA.
+Eliminar una nota borra sus tarjetas asociadas. Se puede exportar cada nota
+como Markdown o la biblioteca completa, con tarjetas e intervalos, como JSON.
+Estas exportaciones contienen tus textos: guardarlas como datos privados.
 
 ACCESO REMOTO Y OPERACIÓN
 El HTTP de este servicio no incorpora TLS. Los nodos Tailscale cifran el
@@ -107,8 +150,7 @@ Comprobar interfaz: pnpm lint:ui server/static/index.html
 Antes de push: pnpm test y node scripts/e2e_verify.mjs (AGENTS.md).
 
 Los siguientes módulos requieren adaptaciones propias, no solo activar un
-interruptor: cursos con sus sesiones, Telegram con su autenticación, estudio
-y transcripción con sus binarios/modelos, y otras herramientas de escritorio.
+interruptor: cursos con sus sesiones, Telegram con su autenticación y las otras herramientas de escritorio.
 Las funciones que requieren micrófono, cámara o el navegador del usuario
 necesitarán decidir qué dispositivo las ejecuta. Esta versión no afirma que
 esas funciones estén disponibles todavía. Los hallazgos de seguridad del

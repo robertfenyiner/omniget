@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from app import DownloadQueue, Handler, Server, validate_url
 from auth import AuthStore, AuthError
+from study import StudyStore
 
 PUBLIC_DNS = [(2, 1, 6, "", ("93.184.216.34", 443))]
 REAL_DNS = socket.getaddrinfo
@@ -31,6 +32,7 @@ class WebTests(unittest.TestCase):
         limited = self.server.auth.login(initial, "test")
         self.session = self.server.auth.change(limited, initial, "permanent-test-password", "test")
         self.server.downloads = self.downloads
+        self.server.study = StudyStore(self.temp.name)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -54,7 +56,7 @@ class WebTests(unittest.TestCase):
 
     def test_health_is_public_but_jobs_and_files_require_auth(self):
         self.assertEqual(self.request("GET", "/api/health", authorized=False)[0], 200)
-        for path in ("/api/jobs", "/api/files/" + "a" * 32 + "/secret"):
+        for path in ("/api/jobs", "/api/study/export", "/api/study/notes", "/api/files/" + "a" * 32 + "/secret"):
             self.assertEqual(self.request("GET", path, authorized=False)[0], 401)
         self.assertEqual(self.request("POST", "/api/jobs", "{}", authorized=False)[0], 401)
 
@@ -212,6 +214,81 @@ class WebTests(unittest.TestCase):
             if worker.is_alive():
                 self.downloads.cancel(job["id"])
                 worker.join(timeout=3)
+
+    def test_notes_cards_review_export_and_delete_through_api(self):
+        payload = {"title": "My study note", "body": "Private notes " * 1000}
+        status, body, _ = self.request("POST", "/api/study/notes", json.dumps(payload))
+        self.assertEqual(status, 200)
+        note = json.loads(body)
+        self.assertEqual(note["body"], payload["body"].strip())
+        status, body, _ = self.request("POST", "/api/study/cards", json.dumps({"note_id": note["id"], "question": "Question?", "answer": "Answer"}))
+        self.assertEqual(status, 201)
+        card = json.loads(body)
+        self.assertEqual(self.request("POST", f"/api/study/cards/{card['id']}/review", json.dumps({"rating": "good"}))[0], 200)
+        export = json.loads(self.request("GET", "/api/study/export")[1])
+        self.assertEqual(len(export["notes"]), 1)
+        self.assertEqual(export["cards"][0]["reviews"], 1)
+        self.assertFalse(export["cards"][0]["due"])
+        self.assertEqual(self.request("GET", f"/api/study/notes/{note['id']}/export")[2]["Content-Type"], "text/markdown; charset=utf-8")
+        self.assertEqual(self.request("POST", f"/api/study/notes/{note['id']}/delete", "{}")[0], 200)
+        self.assertEqual(json.loads(self.request("GET", "/api/study/cards")[1]), [])
+
+    def test_document_job_import_study_and_retry(self):
+        status, body, _ = self.request("POST", "/api/uploads?name=study.txt", b"A private study document.")
+        self.assertEqual(status, 201)
+        source = json.loads(body)
+        job = self.downloads.enqueue({"kind": "document", "upload_id": source["upload_id"]})
+        self.downloads.run(job["id"])
+        self.assertEqual(self.downloads.jobs[job["id"]]["state"], "completed")
+        status, body, _ = self.request("POST", "/api/study/import", json.dumps({"job_id": job["id"], "name": "document.txt"}))
+        self.assertEqual(status, 201)
+        note = json.loads(body)
+        self.assertIn("private study", note["body"])
+        for name in ("../../auth/password.json", "/etc/passwd"):
+            self.assertEqual(self.request("POST", "/api/study/import", json.dumps({"job_id": job["id"], "name": name}))[0], 400)
+        self.downloads.delete(job["id"])
+        self.assertFalse((self.downloads.root / "uploads" / source["upload_id"]).exists())
+        self.assertIn("private study", self.server.study.note(note["id"])["body"])
+
+    def test_transcription_validates_engine_model_language_and_input(self):
+        _, body, _ = self.request("POST", "/api/uploads?name=audio.wav", b"fake audio")
+        upload = json.loads(body)
+        model_dir = self.downloads.models_dir
+        model_dir.mkdir(parents=True)
+        (model_dir / "ggml-base-q5_1.bin").write_bytes(b"test model")
+        self.downloads.whisper = "/bin/true"
+        self.downloads.ffmpeg = "/bin/true"
+        payload = {"kind": "transcribe", "upload_id": upload["upload_id"], "model": "base-q5_1", "language": "es"}
+        job = self.downloads.enqueue(payload)
+        self.assertEqual(job["language"], "es")
+        for field, value in (("model", "../../model"), ("language", "--exec"), ("language", [])):
+            invalid = dict(payload, **{field: value})
+            self.assertEqual(self.request("POST", "/api/jobs", json.dumps(invalid))[0], 400)
+        self.downloads.whisper = None
+        with self.assertRaises(ValueError):
+            self.downloads.enqueue(payload)
+
+    def test_invalid_study_payloads_are_rejected(self):
+        for path, payload in (("notes", []), ("cards", {"question": "?", "answer": "a", "note_id": []}),
+                              ("notes", {"title": "", "body": "x"}), ("notes", {"title": "x", "body": "x", "id": {}})):
+            self.assertEqual(self.request("POST", "/api/study/" + path, json.dumps(payload))[0], 400)
+
+
+class StudyTests(unittest.TestCase):
+    def test_persistence_search_and_review_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            study = StudyStore(directory)
+            note = study.save_note({"title": "Repaso", "body": "Un texto con conceptos."})
+            card = study.save_card({"note_id": note["id"], "question": "Concepto?", "answer": "Explicación"})
+            self.assertEqual(len(study.notes("conceptos")), 1)
+            self.assertEqual(study.notes("unrelated"), [])
+            self.assertTrue(study.cards()[0]["due"])
+            result = study.review(card["id"], "again")
+            self.assertEqual(result["interval_days"], 0)
+            self.assertGreater(result["due_at"], time.time())
+            restored = StudyStore(directory)
+            self.assertEqual(restored.note(note["id"])["body"], note["body"])
+            self.assertEqual(restored.cards()[0]["reviews"], 1)
 
 
 if __name__ == "__main__":

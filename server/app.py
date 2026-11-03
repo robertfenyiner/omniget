@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit, parse_qs
 import uuid
 
 from auth import AuthStore, AuthError
+from study import StudyStore, TEXT_LIMIT
 
 STATIC = Path(__file__).with_name("static")
 DEFAULT_HOSTS = (
@@ -33,8 +34,12 @@ PROFILES = {
     "png": ["-frames:v", "1", "-update", "1"],
     "jpg": ["-frames:v", "1", "-update", "1", "-q:v", "2"],
 }
-UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".flac", ".mov", ".avi", ".ogg", ".opus", ".jpg", ".jpeg", ".png", ".webp"}
+MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".flac", ".mov", ".avi", ".ogg", ".opus"}
+TEXT_EXTENSIONS = {".txt", ".md", ".srt", ".vtt"}
+UPLOAD_EXTENSIONS = MEDIA_EXTENSIONS | TEXT_EXTENSIONS | {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
 UPLOAD_LIMIT = 1024 ** 3
+WHISPER_MODELS = ("base-q5_1", "small-q5_1")
+LANGUAGES = ("auto", "es", "en", "pt", "fr", "de", "it", "ja", "ko", "zh", "ru", "ar")
 
 
 def validate_url(value, allowed_hosts):
@@ -73,6 +78,9 @@ class DownloadQueue:
         self.jobs = {}
         self.processes = {}
         self.ffmpeg = shutil.which("ffmpeg")
+        self.pdftotext = shutil.which("pdftotext")
+        self.whisper = os.environ.get("OMNIGET_WHISPER_CLI") or shutil.which("whisper-cli")
+        self.models_dir = Path(os.environ.get("OMNIGET_WHISPER_MODELS", str(self.root / "models/whisper")))
         index = self.root / "jobs.json"
         if index.exists():
             for job in json.loads(index.read_text()):
@@ -92,6 +100,25 @@ class DownloadQueue:
             temporary.replace(self.root / "jobs.json")
 
     def enqueue(self, payload):
+        if isinstance(payload, dict) and payload.get("kind") in ("transcribe", "document"):
+            kind = payload["kind"]
+            allowed = {"kind", "upload_id", "model", "language"} if kind == "transcribe" else {"kind", "upload_id"}
+            if set(payload) - allowed:
+                raise ValueError("Solicitud de herramienta no válida.")
+            upload = self.upload_path(payload.get("upload_id", ""))
+            details = dict(kind=kind, upload_id=upload.name, title=upload.name[33:])
+            if kind == "transcribe":
+                model, language = payload.get("model", "base-q5_1"), payload.get("language", "auto")
+                if model not in WHISPER_MODELS or language not in LANGUAGES or upload.suffix.lower() not in MEDIA_EXTENSIONS:
+                    raise ValueError("El modelo, idioma o archivo multimedia no es válido.")
+                if not self.whisper or not self.ffmpeg or not (self.models_dir / f"ggml-{model}.bin").is_file():
+                    raise ValueError("El motor o el modelo de transcripción no están instalados.")
+                details.update(model=model, language=language)
+            elif upload.suffix.lower() not in TEXT_EXTENSIONS | {".pdf"}:
+                raise ValueError("Usa un PDF, TXT, Markdown, SRT o VTT.")
+            elif upload.suffix.lower() == ".pdf" and not self.pdftotext:
+                raise ValueError("Falta pdftotext para extraer el PDF.")
+            return self.add_job(details)
         if isinstance(payload, dict) and payload.get("kind") == "convert":
             if (set(payload) - {"kind", "upload_id", "profile"}
                     or not isinstance(payload.get("profile"), str) or payload["profile"] not in PROFILES):
@@ -99,6 +126,8 @@ class DownloadQueue:
             if not self.ffmpeg:
                 raise ValueError("FFmpeg no está disponible en este servidor.")
             upload = self.upload_path(payload.get("upload_id", ""))
+            if upload.suffix.lower() not in MEDIA_EXTENSIONS | {".jpg", ".jpeg", ".png", ".webp"}:
+                raise ValueError("El archivo no es multimedia.")
             return self.add_job(dict(kind="convert", upload_id=upload.name, profile=payload["profile"],
                                      title=upload.name[33:]))
         if not isinstance(payload, dict) or set(payload) - {"url", "quality", "audio_only"}:
@@ -151,8 +180,9 @@ class DownloadQueue:
             original = dict(self.jobs.get(job_id, {}))
         if original.get("state") not in ("failed", "cancelled"):
             raise ValueError("Este trabajo no se puede reintentar.")
-        if original.get("kind") == "convert":
-            return self.enqueue({key: original[key] for key in ("kind", "upload_id", "profile")})
+        if original.get("kind") in ("convert", "transcribe", "document"):
+            fields = ("kind", "upload_id", "profile", "model", "language")
+            return self.enqueue({key: original[key] for key in fields if key in original})
         return self.enqueue({key: original[key] for key in ("url", "quality", "audio_only")})
 
     def delete(self, job_id):
@@ -161,7 +191,7 @@ class DownloadQueue:
                 raise ValueError("Cancela el trabajo antes de eliminarlo.")
             job = self.jobs.pop(job_id)
             shutil.rmtree(self.root / job_id, ignore_errors=True)
-            if job.get("kind") == "convert" and not any(j.get("upload_id") == job["upload_id"] for j in self.jobs.values()):
+            if job.get("upload_id") and not any(j.get("upload_id") == job["upload_id"] for j in self.jobs.values()):
                 (self.root / "uploads" / job["upload_id"]).unlink(missing_ok=True)
             self.save()
 
@@ -216,34 +246,45 @@ class DownloadQueue:
         env["OMNIGET_DATA_DIR"] = str(self.root / "runtime")
         try:
             output.mkdir(parents=True, mode=0o700)
-            if job.get("kind") == "convert":
+            commands = []
+            kind = job.get("kind", "download")
+            if kind == "transcribe":
+                prepared = directory / "prepared.wav"
+                commands.append(("preparing", [self.ffmpeg, "-nostdin", "-y", "-protocol_whitelist", "file,pipe",
+                    "-format_whitelist", "mov,matroska,webm,mp3,wav,flac,ogg,avi,aac", "-i",
+                    str(self.upload_path(job["upload_id"])), "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(prepared)]))
+                commands.append(("transcribing", [self.whisper, "-ng", "-t", "2", "-m",
+                    str(self.models_dir / f"ggml-{job['model']}.bin"), "-f", str(prepared),
+                    "-l", job["language"], "-otxt", "-osrt", "-ovtt", "-oj", "-of", str(output / "transcript")]))
+            elif kind == "document":
+                source = self.upload_path(job["upload_id"])
+                if source.suffix.lower() == ".pdf":
+                    commands.append(("extracting", [self.pdftotext, "-enc", "UTF-8", "-nopgbrk", "-layout", str(source), str(output / "document.txt")]))
+                else:
+                    if source.stat().st_size > TEXT_LIMIT:
+                        raise ValueError("El documento de texto supera el límite de 2 MB.")
+                    shutil.copyfile(source, output / "document.txt")
+            elif kind == "convert":
                 # Do not allow playlists or remote protocols inside uploaded files.
                 command = [self.ffmpeg, "-nostdin", "-y", "-protocol_whitelist", "file,pipe",
                            "-format_whitelist", "mov,matroska,webm,mp3,wav,flac,ogg,avi,aac,image2,png_pipe,jpeg_pipe,webp_pipe", "-i",
                            str(self.upload_path(job["upload_id"])), "-map_metadata", "-1",
                            *PROFILES[job["profile"]], str(output / ("converted." + job["profile"]))]
+                commands.append(("converting", command))
             else:
                 command = [self.cli, "download", job["url"], "-q", str(job["quality"]), "-o", str(output)]
                 if job["audio_only"]:
                     command.append("--audio-only")
+                commands.append(("downloading", command))
             with (directory / "output.log").open("wb") as log:
-                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                           env=env, start_new_session=True, stdin=subprocess.DEVNULL)
-                with self.lock:
-                    self.processes[job_id] = process
-                    if job["state"] == "cancelled":
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                try:
-                    result = process.wait(timeout=self.timeout)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-                    raise ValueError("La descarga superó el tiempo máximo.")
-            if result:
-                raise ValueError("No se pudo completar el trabajo. Revisa el archivo de entrada o vuelve a intentarlo.")
+                deadline = time.monotonic() + self.timeout
+                for phase, command in commands:
+                    with self.lock:
+                        if job["state"] == "cancelled":
+                            return
+                        job["phase"] = phase
+                        self.save()
+                    self.run_command(job, command, log, env, deadline)
             with self.lock:
                 if job["state"] != "cancelled":
                     job.update(state="completed", finished_at=int(time.time()))
@@ -252,9 +293,35 @@ class DownloadQueue:
                 if job["state"] != "cancelled":
                     job.update(state="failed", error=str(exc), finished_at=int(time.time()))
         finally:
+            (directory / "prepared.wav").unlink(missing_ok=True)
             with self.lock:
                 self.processes.pop(job_id, None)
             self.save()
+
+    def run_command(self, job, command, log, env, deadline):
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                   env=env, start_new_session=True, stdin=subprocess.DEVNULL)
+        with self.lock:
+            self.processes[job["id"]] = process
+            if job["state"] == "cancelled":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        try:
+            result = process.wait(timeout=max(.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise ValueError("El trabajo superó el tiempo máximo.")
+        finally:
+            with self.lock:
+                self.processes.pop(job["id"], None)
+        if result:
+            raise ValueError("No se pudo completar el trabajo. Comprueba el formato, el idioma o el archivo de entrada.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -305,7 +372,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/capabilities":
                 return self.respond(200, {"conversion": bool(self.server.downloads.ffmpeg),
                                          "profiles": list(PROFILES), "upload_limit": UPLOAD_LIMIT,
+                                         "study": True, "pdf": bool(self.server.downloads.pdftotext),
+                                         "transcription": bool(self.server.downloads.whisper and self.server.downloads.ffmpeg),
+                                         "models": [{"id": model, "installed": (self.server.downloads.models_dir / f"ggml-{model}.bin").is_file()} for model in WHISPER_MODELS],
+                                         "languages": LANGUAGES,
                                          "allowed_hosts": self.server.downloads.allowed_hosts})
+            if path.startswith("/api/study/"):
+                try:
+                    return self.study_get(path)
+                except (ValueError, UnicodeError) as exc:
+                    return self.respond(400, {"error": str(exc)})
             match = re.fullmatch(r"/api/files/([a-f0-9]{32})/(.+)", path)
             if match:
                 try:
@@ -323,15 +399,59 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, OSError):
                     return self.respond(404, {"error": "Archivo no disponible."})
             return self.respond(404, {"error": "Ruta no disponible."})
-        names = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
+        names = {"/": "index.html", "/app.js": "app.js", "/study.js": "study.js", "/style.css": "style.css"}
         if path not in names:
             return self.respond(404, {"error": "Ruta no disponible."})
         file = STATIC / names[path]
         self.respond(200, file.read_bytes(), mimetypes.guess_type(file.name)[0] + "; charset=utf-8")
 
-    def read_json(self):
+    def study_get(self, path):
+        study = self.server.study
+        query = parse_qs(urlsplit(self.path).query)
+        if path == "/api/study/notes":
+            return self.respond(200, study.notes(query.get("q", [""])[0]))
+        if path == "/api/study/cards":
+            return self.respond(200, study.cards(query.get("note_id", [None])[0]))
+        if path == "/api/study/export":
+            return self.respond(200, study.export(), headers={"Content-Disposition": 'attachment; filename="omniget-study.json"'})
+        match = re.fullmatch(r"/api/study/notes/([a-f0-9]{32})(/export)?", path)
+        if match:
+            note = study.note(match[1])
+            if match[2]:
+                text = ("# " + note["title"] + "\n\n" + note["body"] + "\n").encode()
+                return self.respond(200, text, "text/markdown; charset=utf-8", {"Content-Disposition": 'attachment; filename="note.md"'})
+            return self.respond(200, note)
+        return self.respond(404, {"error": "Ruta de estudio no disponible."})
+
+    def study_post(self, path, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Solicitud de estudio no válida.")
+        study = self.server.study
+        if path == "/api/study/notes":
+            return self.respond(200, study.save_note(payload))
+        if path == "/api/study/cards":
+            return self.respond(201, study.save_card(payload))
+        if path == "/api/study/import":
+            job_id, name = payload.get("job_id"), payload.get("name")
+            if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id) or not isinstance(name, str):
+                raise ValueError("El documento no es válido.")
+            file = self.server.downloads.file_path(job_id, name)
+            if file.suffix.lower() not in TEXT_EXTENSIONS or file.stat().st_size > TEXT_LIMIT:
+                raise ValueError("Importa un texto, subtítulo o Markdown de hasta 2 MB.")
+            return self.respond(201, study.save_note({"title": file.name, "body": file.read_text(encoding="utf-8", errors="replace")}))
+        match = re.fullmatch(r"/api/study/(notes|cards)/([a-f0-9]{32})/(delete|review)", path)
+        if match:
+            kind, item_id, action = match.groups()
+            if action == "review" and kind == "cards":
+                return self.respond(200, study.review(item_id, payload.get("rating")))
+            if action == "delete":
+                (study.delete_note if kind == "notes" else study.delete_card)(item_id)
+                return self.respond(200, {"ok": True})
+        return self.respond(404, {"error": "Ruta de estudio no disponible."})
+
+    def read_json(self, limit=8192):
         length = int(self.headers.get("Content-Length", "0"))
-        if not 0 < length <= 8192 or self.headers.get("Transfer-Encoding"):
+        if not 0 < length <= limit or self.headers.get("Transfer-Encoding"):
             raise AuthError("Solicitud demasiado grande o vacía.", 413)
         if self.headers.get_content_type() != "application/json":
             raise AuthError("Envía una solicitud JSON.", 415)
@@ -371,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             name = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
             name = re.sub(r"[^\w. -]", "_", name)[:120]
             if Path(name).suffix.lower() not in UPLOAD_EXTENSIONS:
-                raise ValueError("Usa un archivo de vídeo, audio o imagen compatible.")
+                raise ValueError("Usa un archivo de vídeo, audio, imagen, PDF o texto compatible.")
             directory = self.server.downloads.root / "uploads"
             directory.mkdir(exist_ok=True, mode=0o700)
             path = directory / (uuid.uuid4().hex + "_" + name)
@@ -401,7 +521,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/uploads":
             return self.upload()
         try:
-            payload = self.read_json()
+            payload = self.read_json(TEXT_LIMIT + 8192 if path.startswith("/api/study/") else 8192)
+            if path.startswith("/api/study/"):
+                return self.study_post(path, payload)
             if path == "/api/jobs":
                 return self.respond(202, self.server.downloads.enqueue(payload))
             match = re.fullmatch(r"/api/jobs/([a-f0-9]{32})/(cancel|retry|delete)", path)
@@ -437,6 +559,7 @@ def main():
     downloads = DownloadQueue(os.environ.get("OMNIGET_WEB_DATA", str(Path.home() / ".local/share/omniget-web")), cli, hosts)
     with Server((bind, port), Handler) as server:
         server.auth = auth
+        server.study = StudyStore(downloads.root)
         server.secure_cookies = os.environ.get("OMNIGET_SECURE_COOKIES") == "1"
         server.downloads = downloads
         print(f"OmniGet web: http://{bind}:{port}", flush=True)

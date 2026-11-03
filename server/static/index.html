@@ -7,6 +7,7 @@
   <title>OmniGet · Tu biblioteca</title>
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
+  <script src="./study.js" defer></script>
 </head>
 <body>
   <main>
@@ -49,6 +50,8 @@
         <nav aria-label="Herramientas" class="tabs">
           <button type="button" id="tab-download" aria-pressed="true">Descargar</button>
           <button type="button" id="tab-convert" aria-pressed="false">Convertir</button>
+          <button type="button" id="tab-transcribe" aria-pressed="false">Transcribir</button>
+          <button type="button" id="tab-study" aria-pressed="false">Estudiar</button>
         </nav>
         <div class="account-actions"><button type="button" class="quiet" id="change-password">Contraseña</button><button type="button" class="quiet" id="logout">Salir</button></div>
       </div>
@@ -77,6 +80,56 @@
           </div>
         </form>
         <p class="hint" id="conversion-hint">Hasta 1 GB por archivo. MP3, WAV y FLAC requieren audio; PNG y JPG extraen el primer fotograma o convierten una imagen.</p>
+      </section>
+      <section class="panel" id="transcribe-panel" hidden>
+        <h2>Del audio al texto</h2>
+        <p>Transcribe audio o vídeo en el servidor. Obtendrás texto y subtítulos SRT y VTT.</p>
+        <form id="transcribe">
+          <label for="transcribe-file">Archivo de audio o vídeo</label>
+          <input id="transcribe-file" type="file" accept=".mp4,.mkv,.webm,.mp3,.wav,.m4a,.flac,.mov,.avi,.ogg,.opus" required>
+          <div class="options">
+            <div><label for="transcribe-model">Modelo</label><select id="transcribe-model"><option value="base-q5_1">Base multilingüe</option></select></div>
+            <div><label for="transcribe-language">Idioma hablado</label><select id="transcribe-language"><option value="auto">Detectar idioma</option><option value="es">Español</option><option value="en">Inglés</option><option value="pt">Portugués</option><option value="fr">Francés</option><option value="de">Alemán</option><option value="it">Italiano</option><option value="ja">Japonés</option><option value="ko">Coreano</option><option value="zh">Chino</option><option value="ru">Ruso</option><option value="ar">Árabe</option></select></div>
+            <button id="transcribe-submit">Subir y transcribir</button>
+          </div>
+        </form>
+        <p class="hint" id="transcription-hint">El audio se procesa localmente, sin enviarlo a servicios de IA. La precisión depende del modelo y de la grabación.</p>
+      </section>
+      <section class="panel" id="study-panel" hidden>
+        <div class="panel-heading"><h2>Tu espacio de estudio</h2><button type="button" id="export-study" class="secondary">Exportar biblioteca</button></div>
+        <form id="document">
+          <label for="document-file">Importa un PDF, texto o subtítulos</label>
+          <div class="row"><input id="document-file" type="file" accept=".pdf,.txt,.md,.srt,.vtt" required><button id="document-submit">Extraer texto</button></div>
+          <p class="hint">Los PDF deben contener texto seleccionable. Cuando termine la extracción, pulsa «Guardar en notas» en el resultado.</p>
+        </form>
+        <div class="study-layout">
+          <aside class="note-library" aria-label="Biblioteca de notas">
+            <div class="panel-heading"><h3>Mis notas</h3><button type="button" id="new-note" class="secondary">Nueva</button></div>
+            <label for="note-search">Buscar notas</label><input type="search" id="note-search" placeholder="Título o contenido">
+            <div id="notes-list" class="notes-list"></div>
+          </aside>
+          <div class="note-editor">
+            <form id="note-form">
+              <label for="note-title">Título de la nota</label><input id="note-title" maxlength="250" required placeholder="Lo que quiero aprender">
+              <label for="note-body" class="spaced-label">Contenido</label><textarea id="note-body" rows="10" placeholder="Escribe tus apuntes o importa una transcripción…"></textarea>
+              <div class="editor-actions"><button id="save-note">Guardar nota</button><button type="button" id="export-note" class="secondary">Exportar Markdown</button><button type="button" id="delete-note" class="secondary">Eliminar nota</button></div><p id="note-status" role="status" class="hint"></p>
+            </form>
+          </div>
+        </div>
+        <section class="cards-panel">
+          <h3>Tarjetas de repaso</h3><p class="hint">Crea preguntas y respuestas. Se vinculan a la nota abierta y vuelven a aparecer según tu valoración.</p>
+          <form id="card-form" class="card-form">
+            <div><label for="card-question">Pregunta</label><textarea id="card-question" rows="2" maxlength="4000" required></textarea></div>
+            <div><label for="card-answer">Respuesta</label><textarea id="card-answer" rows="2" maxlength="12000" required></textarea></div>
+            <button id="save-card">Añadir tarjeta</button>
+          </form>
+          <div class="review-toolbar"><button type="button" id="start-review" class="secondary">Repasar pendientes</button><span id="review-count" class="hint"></span></div>
+          <article id="review-card" class="review-card" hidden>
+            <p id="review-question"></p><pre id="review-answer" hidden></pre>
+            <button type="button" id="show-answer" class="secondary">Mostrar respuesta</button>
+            <div id="review-ratings" class="editor-actions" hidden><button type="button" id="review-again" class="secondary">Repetir</button><button type="button" id="review-good">Bien</button><button type="button" id="review-easy" class="secondary">Fácil</button><button type="button" id="delete-card" class="secondary">Eliminar tarjeta</button></div>
+          </article>
+        </section>
       </section>
     </div>
     <p id="message" role="status" aria-live="polite"></p>

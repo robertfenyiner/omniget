@@ -20,7 +20,9 @@ jobs:
       - name: Private web API and password security tests
         run: python3 -m unittest discover -s server -v
       - name: Browser script syntax
-        run: node --check server/static/app.js
+        run: |
+          node --check server/static/app.js
+          node --check server/static/study.js
 
   rust:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'weblate' }}

@@ -343,3 +343,111 @@ input[type=file] {
     min-width: 140px;
   }
 }
+textarea {
+  font: inherit;
+  border: 1px solid #425448;
+  background: #111915;
+  color: #f1f5ef;
+  border-radius: 9px;
+  padding: 12px 14px;
+  width: 100%;
+  resize: vertical;
+  font-size: 14px;
+  line-height: 1.6;
+}
+textarea:focus {
+  outline: 2px solid #c3f883;
+  outline-offset: 3px;
+}
+.tabs {
+  flex-wrap: wrap;
+}
+.study-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 1px solid #354539;
+}
+h3 {
+  font-size: 16px;
+  margin: 0 0 18px;
+  font-weight: 600;
+}
+.note-library .panel-heading h3 {
+  margin: 0;
+}
+.note-library .panel-heading {
+  margin-bottom: 18px;
+}
+.note-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  background: #26372a;
+  color: #d7edce;
+  border: 1px solid #425448;
+}
+.note-link[aria-pressed=true] {
+  border-color: #c3f883;
+}
+.notes-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.spaced-label {
+  margin-top: 18px;
+}
+.editor-actions, .review-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+.cards-panel {
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 1px solid #354539;
+}
+.card-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 18px;
+}
+.card-form > button {
+  justify-self: start;
+}
+.review-card {
+  background: #111915;
+  border: 1px solid #354539;
+  border-radius: 12px;
+  padding: 22px;
+  margin-top: 20px;
+}
+.review-card pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+}
+@media(max-width:700px) {
+  .study-layout, .card-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-heading, .panel-heading {
+    flex-wrap: wrap;
+  }
+  .workspace-heading {
+    align-items: flex-start;
+  }
+}

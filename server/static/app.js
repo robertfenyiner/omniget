@@ -1,5 +1,7 @@
 const el = (id) => document.getElementById(id);
 const states = {queued:"En cola", running:"Procesando", completed:"Completado", failed:"No completado", cancelled:"Cancelado"};
+const sections = ["download", "convert", "transcribe", "study"];
+const phases = {preparing:"Preparando audio", transcribing:"Transcribiendo", extracting:"Extrayendo texto", converting:"Convirtiendo", downloading:"Descargando"};
 let authenticated = false;
 let mustChange = false;
 let changingPassword = false;
@@ -73,14 +75,15 @@ async function saveFile(job, file) {
 function renderJob(job) {
   const card = node("article", "", "job");
   const detail = node("div", "");
-  let title = job.title || "Conversión";
-  if (job.kind !== "convert") {
+  let title = job.title || "Trabajo";
+  if (!job.kind || job.kind === "download") {
     try { title = new URL(job.url).hostname; } catch { title = "Descarga"; }
   }
   detail.append(node("div", title, "job-title"));
-  detail.append(node("p", job.kind === "convert" ? `Conversión a ${job.profile.toUpperCase()}` : job.url));
+  const descriptions = {convert:`Conversión a ${job.profile?.toUpperCase()}`, transcribe:`Transcripción · ${job.language || "auto"}`, document:"Extracción de texto"};
+  detail.append(node("p", descriptions[job.kind] || job.url));
   if (job.error) detail.append(node("p", job.error));
-  card.append(detail, node("span", states[job.state] || job.state, `state ${job.state}`));
+  card.append(detail, node("span", job.state === "running" ? (phases[job.phase] || "Procesando") : states[job.state], `state ${job.state}`));
   const actions = node("div", "", "job-actions");
   if (["queued", "running"].includes(job.state)) actions.append(actionButton("Cancelar", () => jobAction(job, "cancel")));
   if (["failed", "cancelled"].includes(job.state)) actions.append(actionButton("Reintentar", () => jobAction(job, "retry")));
@@ -90,6 +93,17 @@ function renderJob(job) {
     for (const file of job.files) {
       const size = file.size < 1048576 ? `${Math.ceil(file.size / 1024)} KB` : `${(file.size / 1048576).toFixed(1)} MB`;
       files.append(actionButton(`${file.name} · ${size}`, () => saveFile(job, file), "file"));
+      if (/\.(txt|md|srt|vtt)$/i.test(file.name) && file.size <= 2 * 1024 * 1024) {
+        const saveNote = actionButton("Guardar en notas", async () => {
+          const note = await (await api("/api/study/import", {method:"POST", body:JSON.stringify({job_id:job.id, name:file.name})})).json();
+          selectTab("study");
+          await loadStudy();
+          await openStudyNote(note.id);
+          el("message").textContent = "Texto guardado en tus notas.";
+        });
+        saveNote.setAttribute("aria-label", `Guardar en notas: ${file.name}`);
+        files.append(saveNote);
+      }
     }
     card.append(files);
   }
@@ -115,6 +129,15 @@ async function loadWorkspace() {
   el("convert-submit").disabled = !capabilities.conversion;
   if (!capabilities.conversion) el("conversion-hint").textContent = "La conversión no está disponible: falta FFmpeg en el servidor.";
   el("allowed-hosts").textContent = capabilities.allowed_hosts.join(" · ");
+  const installed = capabilities.models.filter(model => model.installed);
+  el("transcribe-model").replaceChildren(...installed.map(model => {
+    const option = node("option", model.id === "base-q5_1" ? "Base multilingüe" : "Small multilingüe");
+    option.value = model.id;
+    return option;
+  }));
+  el("transcribe-submit").disabled = !capabilities.transcription || !installed.length;
+  if (el("transcribe-submit").disabled) el("transcription-hint").textContent = "El motor o el modelo de transcripción aún no están instalados en este servidor.";
+  await loadStudy();
   await refresh();
 }
 
@@ -174,15 +197,14 @@ el("password-form").onsubmit = async (event) => {
   finally { el("save-password").disabled = false; }
 };
 
-for (const name of ["download", "convert"]) {
-  el(`tab-${name}`).onclick = () => {
-    for (const item of ["download", "convert"]) {
+function selectTab(name) {
+    for (const item of sections) {
       el(`${item}-panel`).hidden = item !== name;
       el(`tab-${item}`).setAttribute("aria-pressed", String(item === name));
     }
     el("message").textContent = "";
-  };
 }
+for (const name of sections) el(`tab-${name}`).onclick = () => selectTab(name);
 
 el("download").onsubmit = async (event) => {
   event.preventDefault();
@@ -218,10 +240,41 @@ el("convert").onsubmit = async (event) => {
   finally { busy = false; el("convert-submit").disabled = false; }
 };
 
-(async () => {
+async function uploadToolJob(file, details, button) {
+  if (!file || busy) return;
+  if (file.size > 1024 ** 3) throw new Error("El archivo supera el límite de 1 GB.");
+  busy = true;
+  button.disabled = true;
+  try {
+    el("message").textContent = "Subiendo el archivo al servidor…";
+    const upload = await (await api(`/api/uploads?name=${encodeURIComponent(file.name)}`, {
+      method:"POST", body:file, headers:{"Content-Type":"application/octet-stream"},
+    })).json();
+    await api("/api/jobs", {method:"POST", body:JSON.stringify({...details, upload_id:upload.upload_id})});
+    el("message").textContent = "Trabajo añadido a la cola.";
+    await refresh();
+  } finally { busy = false; button.disabled = false; }
+}
+
+el("transcribe").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await uploadToolJob(el("transcribe-file").files[0], {kind:"transcribe", model:el("transcribe-model").value, language:el("transcribe-language").value}, el("transcribe-submit"));
+    el("transcribe-file").value = "";
+  } catch (error) { el("message").textContent = error.message; }
+};
+el("document").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await uploadToolJob(el("document-file").files[0], {kind:"document"}, el("document-submit"));
+    el("document-file").value = "";
+  } catch (error) { el("message").textContent = error.message; }
+};
+
+window.addEventListener("DOMContentLoaded", async () => {
   try {
     showAccount(await (await api("/api/auth/status")).json());
     await loadWorkspace();
   } catch (error) { el("message").textContent = error.message; }
-})();
+});
 setInterval(refresh, 5000);
