@@ -43,11 +43,14 @@ class TelegramBot:
         username = self.call("getMe", {})["username"] if verify else config.get("username", "")
         return {"configured": True, "username": username, "notifications": config.get("notifications", True)}
 
-    def send_text(self, text):
+    def send_text(self, text, reply_to=None):
         config = self.config()
         if not config:
             raise ValueError("El bot no está configurado.")
-        return self.call("sendMessage", {"chat_id": config["chat_id"], "text": text[:4000], "link_preview_options": {"is_disabled": True}})
+        payload = {"chat_id": config["chat_id"], "text": text[:4000], "link_preview_options": {"is_disabled": True}}
+        if reply_to:
+            payload["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+        return self.call("sendMessage", payload)
 
     def notify_job(self, job):
         config = self.config()
@@ -57,7 +60,7 @@ class TelegramBot:
         title = job.get("title") or urllib.parse.urlsplit(job.get("url", "")).hostname or "Trabajo"
         self.send_text(f"OmniGet · {state}\n{title}\nID: {job['id']}\n{config.get('web_url', '')}")
 
-    def send_file(self, path):
+    def send_file(self, path, reply_to=None, media=False):
         config = self.config()
         if not config:
             raise ValueError("El bot no está configurado.")
@@ -66,14 +69,20 @@ class TelegramBot:
         base = urllib.parse.urlsplit(config["api_base"])
         boundary = "omniget-" + secrets.token_hex(16)
         name = re.sub(r"[^A-Za-z0-9_. -]", "_", path.name)[:140] or "result.bin"
+        field = "video" if media and path.suffix.lower() == ".mp4" else "audio" if media and path.suffix.lower() in (".mp3", ".m4a") else "document"
+        method = {"video": "sendVideo", "audio": "sendAudio", "document": "sendDocument"}[field]
+        extra = ""
+        if reply_to:
+            value = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+            extra = f'--{boundary}\r\nContent-Disposition: form-data; name="reply_parameters"\r\n\r\n{value}\r\n'
         prefix = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{config['chat_id']}\r\n"
-                  f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{name}\"\r\n"
+                  + extra + f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\n"
                   "Content-Type: application/octet-stream\r\n\r\n").encode()
         suffix = f"\r\n--{boundary}--\r\n".encode()
         cls = http.client.HTTPSConnection if base.scheme == "https" else http.client.HTTPConnection
         connection = cls(base.hostname, base.port, timeout=60)
         try:
-            target = base.path.rstrip("/") + "/bot" + config["token"] + "/sendDocument"
+            target = base.path.rstrip("/") + "/bot" + config["token"] + "/" + method
             connection.putrequest("POST", target)
             connection.putheader("Content-Type", "multipart/form-data; boundary=" + boundary)
             connection.putheader("Content-Length", str(len(prefix) + path.stat().st_size + len(suffix)))

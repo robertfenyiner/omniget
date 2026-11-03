@@ -184,28 +184,61 @@ TELEGRAM Y COSMODOWNLOADER
 Instalación en esta máquina, con Cosmo ubicado en /opt/Downloader-Bot:
   python3 server/install-cosmo.py
 El script lee la configuración privada existente, verifica la identidad del
-bot, copia sesiones multimedia filtradas y crea una imagen fina basada en
+bot, importa sesiones multimedia filtradas solo si aún no existen y crea una imagen fina basada en
 la imagen local downloader-bot-robert:private-v2. No modifica el Compose
 original, la base de datos ni los otros servicios de Cosmo. Solo recrea el
 contenedor del bot con un override y conserva la imagen anterior.
+La imagen de esta etapa es downloader-bot-robert:cosmo-tools-v1.
 
 Configuración privada de OmniGet: telegram.json y bot-bridge.json bajo
 ~/.config/omniget-web (0600). La copia para el contenedor se monta de solo
 lectura desde /opt/Downloader-Bot/private y queda excluida de Git. El canal
-local es un socket Unix autenticado, no un puerto público. Solo permite
-consultar el estado, añadir enlaces y cancelar trabajos: no exporta notas,
-contraseñas ni cookies. El router de Cosmo admite solo ADMIN_ID en chat privado.
+local es un socket Unix autenticado, no un puerto público. Permite ejecutar
+herramientas, subir archivos, gestionar estudio y consultar cursos. Las notas
+y sus exportaciones solo se devuelven al propietario; contraseñas y cookies
+nunca se devuelven por ese canal. El router admite solo ADMIN_ID en chat privado.
 
 Comandos del bot existente:
   /omniget
   /omniget_estado
   /omniget_descargar https://...
   /omniget_cancelar ID
+  /herramientas o /cosmo
+  /estado, /cancelar ID, /reintentar ID, /resultado ID
+  /ocr, /transcribir, /convertir mp3 (respondiendo a un archivo)
+  /nota Título | Texto, /notas búsqueda, /ver_nota ID
+  /editar_nota ID Título | Texto, /borrar_nota ID (confirma con botón)
+  /guardar ID document.txt (o transcript.txt)
+  /tarjeta Pregunta | Respuesta, /repasar, /exportar_estudio
+  /sesiones, /udemy [página], /lecciones ID_CURSO [página], /leccion URL
 Los comandos habituales /start, /help, /settings y /stats siguen disponibles.
+Las descargas habituales siguen usando Cosmo. Los enlaces adicionales a Vimeo,
+Reddit, Bilibili y Twitch pasan al trabajador de OmniGet; reconocer el dominio
+no garantiza que cualquier contenido de esa plataforma esté disponible.
+Enviar PDF, imagen, audio, voz o vídeo presenta acciones en botones. Cada
+herramienta devuelve sus archivos al mensaje original. Los resultados de OCR
+y transcripción pueden guardarse como notas compartidas con el portal.
+
+La bandeja de entrega queda persistida dentro de jobs.json. Cada archivo se
+marca tras recibir confirmación de Telegram; un fallo de envío no vuelve a
+ejecutar FFmpeg ni OCR. Cinco fallos bloquean el envío y /resultado ID permite
+reintentarlo. Un corte entre la aceptación remota y el guardado local puede
+duplicar el último envío: no se promete entrega exactamente una vez.
+Las herramientas duplicadas desde el mismo mensaje y acción reutilizan el ID
+de trabajo. /reintentar crea una ejecución nueva si falló o fue cancelada.
+Los trabajos interrumpidos por reinicio se marcan fallidos y se pueden
+reintentar; no se promete reanudar procesos ni conversiones parciales.
+
 No se ejecuta getUpdates desde OmniGet: el poller de Cosmo sigue siendo el único.
 Las notificaciones no incluyen cookies ni URLs firmadas; los archivos solo se
 envían al chat privado fijo configurado. El botón Enviar a Telegram admite
-hasta 100 MB y transmite por bloques. Para tamaños mayores usar la descarga web.
+hasta 100 MiB y transmite por bloques. Las herramientas de Telegram aplican
+también ese límite de entrada/salida; conversiones que lo superen requieren
+descargar el resultado desde la web. Los límites de los descargadores nativos
+de Cosmo permanecen independientes.
+El volumen telegram_bot_api_data se monta solo lectura en el bot: la API local
+devuelve rutas absolutas, no enlaces HTTP. La herramienta valida que la ruta
+pertenezca a /var/lib/telegram-bot-api y copia el archivo antes de procesarlo.
 La integración no enumera chats ni descarga contenido privado de una cuenta
 personal de Telegram; es una conexión con el bot ya existente.
 
@@ -218,6 +251,9 @@ vez install-cosmo.py para actualizar y volver a comprobar la conexión privada.
 
 DESARROLLO Y SIGUIENTES ETAPAS
 Comprobar backend: python3 -m unittest discover -s server -v
+Las pruebas de test_cosmo_router.py requieren aiogram y se ejecutan dentro
+de una imagen de Cosmo aislada, sin red y con configuración ficticia. En el
+host web quedan omitidas de forma explícita, no se cuentan como aprobadas.
 Comprobar interfaz: pnpm lint:ui server/static/index.html
 Antes de push: pnpm test y node scripts/e2e_verify.mjs (AGENTS.md).
 

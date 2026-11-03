@@ -23,6 +23,7 @@ def run(arguments, **options):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path("/opt/Downloader-Bot"))
+    parser.add_argument("--image", default="downloader-bot-robert:cosmo-tools-v1")
     args = parser.parse_args()
     project = args.project.resolve()
     os.umask(0o077)
@@ -72,7 +73,7 @@ def main():
     sessions = ServiceSessions(config_root / "services", Path.home() / ".local/share/omniget-web/runtime")
     for filename, domain in (("youtube.txt", "youtube.com"), ("instagram.txt", "instagram.com"), ("facebook.txt", "facebook.com")):
         cookie_file = project / "cookies" / filename
-        if cookie_file.is_file():
+        if cookie_file.is_file() and not (sessions.cookies / f"{domain}.txt").is_file():
             sessions.import_text(domain, cookie_file.read_text())
     sessions.prepare_runtime()
     source = project / "handlers/__init__.py"
@@ -88,7 +89,7 @@ def main():
         (context / "Dockerfile").write_text("FROM downloader-bot-robert:private-v2\n"
             "COPY --chown=appuser:appgroup omniget.py /app/handlers/omniget.py\n"
             "COPY --chown=appuser:appgroup handlers_init.py /app/handlers/__init__.py\n")
-        run(["sudo", "-n", "docker", "build", "--pull=false", "-t", "downloader-bot-robert:omniget-v1", str(context)])
+        run(["sudo", "-n", "docker", "build", "--pull=false", "-t", args.image, str(context)])
     uid = subprocess.check_output(["sudo", "-n", "docker", "exec", "downloader-bot", "id", "-u", "appuser"], text=True).strip()
     gid = subprocess.check_output(["sudo", "-n", "docker", "exec", "downloader-bot", "id", "-g", "appuser"], text=True).strip()
     private = project / "private"
@@ -108,10 +109,11 @@ def main():
             raise SystemExit("No apareció el socket de OmniGet tras reiniciar el servicio.")
     override.write_text(f'''services:
   downloader-bot:
-    image: downloader-bot-robert:omniget-v1
+    image: {args.image}
     volumes:
       - {bridge_dir}:/run/omniget:ro
       - {private / 'omniget-bridge.json'}:/app/omniget-bridge.json:ro
+      - telegram_bot_api_data:/var/lib/telegram-bot-api:ro
 ''')
     excludes = project / ".git/info/exclude"
     with excludes.open("a") as file:
@@ -134,7 +136,7 @@ def main():
                  "result=asyncio.run(request(json.loads(CONFIG.read_text()),'/status')); "
                  "assert result['ok']; print('Puente local comprobado desde el usuario del bot.')"])
             print("Cosmo sigue sano y la integración OmniGet está desplegada.")
-            print("Comandos: /omniget, /omniget_estado, /omniget_descargar URL, /omniget_cancelar ID")
+            print("Comandos: /herramientas, /estado, /ocr, /transcribir, /convertir, /notas, /repasar, /udemy")
             return
         time.sleep(2)
     raise SystemExit("La integración se desplegó, pero el chequeo de salud no confirmó healthy. Revisa el contenedor antes de continuar.")

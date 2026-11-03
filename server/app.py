@@ -106,7 +106,7 @@ class DownloadQueue:
             temporary.chmod(0o600)
             temporary.replace(self.root / "jobs.json")
 
-    def enqueue(self, payload):
+    def enqueue(self, payload, delivery=None):
         if isinstance(payload, dict) and payload.get("kind") == "udemy":
             if set(payload) - {"kind", "url", "quality"}:
                 raise ValueError("Solicitud Udemy no válida.")
@@ -122,7 +122,7 @@ class DownloadQueue:
             tool = self.root / "runtime/bin/yt-dlp.pyz"
             if not tool.is_file():
                 raise ValueError("El motor yt-dlp no está instalado en el directorio del servidor.")
-            return self.add_job(dict(kind="udemy", url=url, quality=quality, title="Lección Udemy"))
+            return self.add_job(dict(kind="udemy", url=url, quality=quality, title="Lección Udemy"), delivery)
         if isinstance(payload, dict) and payload.get("kind") in ("transcribe", "document"):
             kind = payload["kind"]
             allowed = {"kind", "upload_id", "model", "language"} if kind == "transcribe" else {"kind", "upload_id", "ocr", "ocr_language"}
@@ -148,7 +148,7 @@ class DownloadQueue:
                 if upload.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and mode == "off":
                     raise ValueError("Una imagen necesita OCR. Selecciona Automático o Forzar OCR.")
                 details.update(ocr=mode, ocr_language=language)
-            return self.add_job(details)
+            return self.add_job(details, delivery)
         if isinstance(payload, dict) and payload.get("kind") == "convert":
             if (set(payload) - {"kind", "upload_id", "profile"}
                     or not isinstance(payload.get("profile"), str) or payload["profile"] not in PROFILES):
@@ -159,7 +159,7 @@ class DownloadQueue:
             if upload.suffix.lower() not in MEDIA_EXTENSIONS | {".jpg", ".jpeg", ".png", ".webp"}:
                 raise ValueError("El archivo no es multimedia.")
             return self.add_job(dict(kind="convert", upload_id=upload.name, profile=payload["profile"],
-                                     title=upload.name[33:]))
+                                     title=upload.name[33:]), delivery)
         if not isinstance(payload, dict) or set(payload) - {"url", "quality", "audio_only"}:
             raise ValueError("Solicitud no válida.")
         url = validate_url(payload.get("url"), self.allowed_hosts)
@@ -169,15 +169,19 @@ class DownloadQueue:
         audio = payload.get("audio_only", False)
         if type(audio) is not bool:
             raise ValueError("El modo de audio no es válido.")
-        return self.add_job(dict(kind="download", url=url, quality=quality, audio_only=audio))
+        return self.add_job(dict(kind="download", url=url, quality=quality, audio_only=audio), delivery)
 
-    def add_job(self, details):
+    def add_job(self, details, delivery=None):
+        if delivery is not None and (type(delivery) is not int or delivery <= 0):
+            raise ValueError("Mensaje de Telegram no válido.")
         with self.lock:
             if self.pending.full() or len(self.jobs) >= 500:
                 raise ValueError("La cola o el historial están llenos.")
             if shutil.disk_usage(self.root).free < 1024 ** 3:
                 raise ValueError("Debe quedar al menos 1 GB libre para iniciar una descarga.")
             job = dict(details, id=uuid.uuid4().hex, state="queued", created_at=int(time.time()), error=None)
+            if delivery is not None:
+                job["delivery"] = dict(reply_to=delivery, sent=[], attempts=0, state="pending", next_at=0)
             self.jobs[job["id"]] = job
             self.save()
             self.pending.put_nowait(job["id"])
@@ -205,20 +209,22 @@ class DownloadQueue:
                     pass
             self.save()
 
-    def retry(self, job_id):
+    def retry(self, job_id, delivery=None):
         with self.lock:
             original = dict(self.jobs.get(job_id, {}))
         if original.get("state") not in ("failed", "cancelled"):
             raise ValueError("Este trabajo no se puede reintentar.")
         if original.get("kind") in ("convert", "transcribe", "document"):
             fields = ("kind", "upload_id", "profile", "model", "language", "ocr", "ocr_language")
-            return self.enqueue({key: original[key] for key in fields if key in original})
+            return self.enqueue({key: original[key] for key in fields if key in original}, delivery)
         if original.get("kind") == "udemy":
-            return self.enqueue({key: original[key] for key in ("kind", "url", "quality")})
-        return self.enqueue({key: original[key] for key in ("url", "quality", "audio_only")})
+            return self.enqueue({key: original[key] for key in ("kind", "url", "quality")}, delivery)
+        return self.enqueue({key: original[key] for key in ("url", "quality", "audio_only")}, delivery)
 
     def delete(self, job_id):
         with self.lock:
+            if self.jobs.get(job_id, {}).get("delivery", {}).get("state") == "pending":
+                raise ValueError("Espera a que termine el envío a Telegram antes de eliminar el trabajo.")
             if self.jobs.get(job_id, {}).get("state") not in ("completed", "failed", "cancelled"):
                 raise ValueError("Cancela el trabajo antes de eliminarlo.")
             job = self.jobs.pop(job_id)
@@ -244,6 +250,8 @@ class DownloadQueue:
                     for job in reversed(list(self.jobs.values()))]
 
     def file_path(self, job_id, name):
+        if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id) or not isinstance(name, str):
+            raise ValueError("Archivo no disponible.")
         with self.lock:
             if self.jobs.get(job_id, {}).get("state") != "completed":
                 raise ValueError("Archivo no disponible.")
@@ -339,7 +347,7 @@ class DownloadQueue:
             with self.lock:
                 self.processes.pop(job_id, None)
             self.save()
-            if self.telegram:
+            if self.telegram and not job.get("delivery"):
                 try:
                     self.telegram.notify_job(job)
                 except ValueError:
@@ -642,7 +650,10 @@ def main():
         server.telegram = TelegramBot(auth.directory / "telegram.json")
         downloads.sessions = server.sessions
         downloads.telegram = server.telegram
-        bridge = start_bridge(auth.directory / "bot-bridge.json", downloads)
+        from delivery import DeliveryWorker
+        delivery = DeliveryWorker(downloads, server.telegram)
+        threading.Thread(target=delivery.work, daemon=True).start()
+        bridge = start_bridge(auth.directory / "bot-bridge.json", downloads, server.study)
         server.secure_cookies = os.environ.get("OMNIGET_SECURE_COOKIES") == "1"
         server.downloads = downloads
         print(f"OmniGet web: http://{bind}:{port}", flush=True)
